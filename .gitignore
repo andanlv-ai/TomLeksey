@@ -1,0 +1,35 @@
+# === Compiled output ===
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.xml
+*.exe.config
+*.sourcelink.json
+
+# === IDE ===
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# === MultiCharts / .NET ===
+*.GeneratedMSBuildEditorConfig.editorconfig
+project.assets.json
+*.csproj.nuget.dgspec.json
+*.csproj.nuget.g.props
+*.csproj.nuget.g.targets
+*.csproj.FileListAbsolute.txt
+*.Up2Date
+
+# === OS ===
+Thumbs.db
+.DS_Store
+
+# === Logs ===
+*.log
+
+# === VS Code ===
+.vscode/
