@@ -44,7 +44,7 @@ namespace PowerLanguage.Indicator
             _tickCount    = 0;
             _barTickCount = 0;
             _lastCalcBar  = -1;
-            Output.WriteLine("=== TradesAlert_v2 v3.1 START [{0}] {1} ===",
+            Output.WriteLine("=== TradesAlert_v2 v3.2 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Логика: сигнал = {0} подряд уровней где |Ask-Bid| >= {1}% от maxTotal",
                 MinStackHeight, LevelImbalancePct);
