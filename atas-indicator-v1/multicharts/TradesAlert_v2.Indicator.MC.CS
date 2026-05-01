@@ -220,7 +220,27 @@ namespace PowerLanguage.Indicator
                     Output.WriteLine("[SIGNAL FIRED] {0} | стэк из {1} уровней начиная с индекса {2} (цена {3:F2})",
                         plotSide, plotLen, plotStart, levels[plotStart].Price);
                     if (isAlertTick)
-                        this.Alerts.Alert();
+                    {
+                        var sb = new System.Text.StringBuilder();
+                        sb.AppendFormat("=== SIGNAL: {0} | {1} | {2} ===\n", plotSide, instrument, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                        sb.AppendFormat("Stack: {0} levels from index {1}, price {2:F5}\n", plotLen, plotStart, levels[plotStart].Price);
+                        sb.AppendFormat("maxBuyStack={0} maxSellStack={1} MinStackHeight={2}\n", maxBuyStack, maxSellStack, MinStackHeight);
+                        sb.AppendFormat("maxTotal={0:F1} threshold={1:F1} ({2}% of maxTotal)\n", maxTotal, threshold, LevelImbalancePct);
+                        sb.AppendFormat("BarTick={0}\n\n", _barTickCount);
+                        sb.AppendLine("Price        | Ask     | Bid     | Total   | NetDelta | ND%      | Sign");
+                        for (int k = 0; k < levels.Count; k++)
+                        {
+                            var lv         = levels[k];
+                            double nd      = lv.Ask - lv.Bid;
+                            double ndPct2  = maxTotal > 0.0 ? Math.Abs(nd) / maxTotal * 100.0 : 0.0;
+                            string signStr2 = lv.Sign == 1 ? "+BUY" : (lv.Sign == -1 ? "-SELL" : " 0  ");
+                            string inStack2 = (plotStart >= 0 && k >= plotStart && k < plotStart + plotLen) ? " <<<" : "";
+                            sb.AppendFormat("{0,12:F5} | {1,7:F1} | {2,7:F1} | {3,7:F1} | {4,8:F1} | {5,7:F1}% | {6}{7}\n",
+                                lv.Price, lv.Ask, lv.Bid, lv.Total, nd, ndPct2, signStr2, inStack2);
+                        }
+                        sb.AppendFormat("\nSigns: {0}", chain);
+                        this.Alerts.Alert(sb.ToString());
+                    }
                 }
                 else
                 {
