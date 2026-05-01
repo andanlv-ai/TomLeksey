@@ -1,7 +1,7 @@
 // TradesAlert_v2.Indicator.CS — копия для MultiCharts
-// Автоматически скопировано 30.04.2026
+// Автоматически скопировано 01.05.2026
 // Путь для копирования: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\TradesAlert_v2.Indicator.CS
-// Версия: v3.1 — email через встроенный Alert.Alert() MC (Format > Alerts > Email)
+// Версия: v3.2 — алерт по тику N нового бара (не при закрытии), лог показывает сигнал в шапке
 
 using System;
 using System.Collections.Generic;
@@ -16,18 +16,20 @@ namespace PowerLanguage.Indicator
     [SameAsSymbol(false)]
     public class TradesAlert_v2 : IndicatorObject
     {
-        // === VERSION: 2026-04-30-v3.1 ===
+        // === VERSION: 2026-05-01-v3.2 ===
         [Input] public double LevelImbalancePct { get; set; }
         [Input] public int    MinStackHeight    { get; set; }
         [Input] public int    LogEveryNTicks    { get; set; }
 
         private IPlotObject _signal;
         private int _tickCount;
+        private int _barTickCount;
+        private int _lastCalcBar;
 
         public TradesAlert_v2(object ctx) : base(ctx)
         {
-            LevelImbalancePct = 10.0;
-            MinStackHeight    = 35;
+            LevelImbalancePct = 35.0;
+            MinStackHeight    = 3;
             LogEveryNTicks    = 50;
         }
 
@@ -39,9 +41,11 @@ namespace PowerLanguage.Indicator
 
         protected override void StartCalc()
         {
-            _tickCount = 0;
+            _tickCount    = 0;
+            _barTickCount = 0;
+            _lastCalcBar  = -1;
             Output.WriteLine("=== TradesAlert_v2 v3.1 START [{0}] {1} ===",
-                DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Логика: сигнал = {0} подряд уровней где |Ask-Bid| >= {1}% от maxTotal",
                 MinStackHeight, LevelImbalancePct);
             Output.WriteLine("    Params: LevelImbalancePct={0}% MinStackHeight={1} LogEveryNTicks={2}",
@@ -70,6 +74,16 @@ namespace PowerLanguage.Indicator
             }
 
             bool isLastBar = Bars.LastBarOnChart;
+
+            if (isLastBar)
+            {
+                if (Bars.CurrentBar != _lastCalcBar)
+                {
+                    _lastCalcBar  = Bars.CurrentBar;
+                    _barTickCount = 0;
+                }
+                _barTickCount++;
+            }
 
             // --- Шаг 1: Собираем уровни, находим maxTotal ---
             var levels = new List<LevelData>();
@@ -161,13 +175,17 @@ namespace PowerLanguage.Indicator
 
             _tickCount++;
 
-            // --- Логирование ---
-            bool logFull = isLastBar && (hasBuy || hasSell || _tickCount % LogEveryNTicks == 0);
+            // --- Логирование и алерт ---
+            // Алерт и лог: на формирующемся баре, после LogEveryNTicks тиков
+            bool isAlertTick = isLastBar && _barTickCount == LogEveryNTicks;
+            bool logFull     = isLastBar && (isAlertTick || _barTickCount % LogEveryNTicks == 0);
             if (logFull)
             {
                 string instrument = Bars.Info.Name;
-                Output.WriteLine("=== CalcBar [{0}] Tick#{1} | {2} | maxTotal={3:F1} threshold={4:F1} ({5}% от maxTotal) ===",
-                    DateTime.UtcNow.ToString("HH:mm:ss"), _tickCount, instrument,
+                string signalStr  = plotVal == 1 ? "BUY" : (plotVal == -1 ? "SELL" : "NONE");
+                Output.WriteLine("=== CalcBar [{0}] BarTick#{1} TotalTick#{2} | {3} | SIGNAL={4} ===",
+                    DateTime.Now.ToString("HH:mm:ss"), _barTickCount, _tickCount, instrument, signalStr);
+                Output.WriteLine("    maxTotal={0:F1} threshold={1:F1} ({2}% от maxTotal)",
                     maxTotal, threshold, LevelImbalancePct);
 
                 Output.WriteLine("[RESULT] maxBuyStack={0} maxSellStack={1} MinStackHeight={2} => hasBuy={3} hasSell={4} => Signal={5}",
@@ -201,7 +219,8 @@ namespace PowerLanguage.Indicator
                 {
                     Output.WriteLine("[SIGNAL FIRED] {0} | стэк из {1} уровней начиная с индекса {2} (цена {3:F2})",
                         plotSide, plotLen, plotStart, levels[plotStart].Price);
-                    this.Alerts.Alert();
+                    if (isAlertTick)
+                        this.Alerts.Alert();
                 }
                 else
                 {
