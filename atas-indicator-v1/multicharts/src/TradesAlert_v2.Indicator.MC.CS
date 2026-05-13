@@ -1,7 +1,7 @@
 // TradesAlert_v2.Indicator.CS — копия для MultiCharts
 // Автоматически скопировано 01.05.2026
 // Путь для копирования: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\TradesAlert_v2.Indicator.CS
-// Версия: v3.2 — алерт по тику N нового бара (не при закрытии), лог показывает сигнал в шапке
+// Версия: v3.4 — флаг _alertFiredThisBar: алерт ровно 1 раз на бар при первом тике >= LogEveryNTicks
 
 using System;
 using System.Collections.Generic;
@@ -16,15 +16,16 @@ namespace PowerLanguage.Indicator
     [SameAsSymbol(false)]
     public class TradesAlert_v2 : IndicatorObject
     {
-        // === VERSION: 2026-05-01-v3.2 ===
+        // === VERSION: 2026-05-07-v3.4 ===
         [Input] public double LevelImbalancePct { get; set; }
         [Input] public int    MinStackHeight    { get; set; }
         [Input] public int    LogEveryNTicks    { get; set; }
 
         private IPlotObject _signal;
-        private int _tickCount;
-        private int _barTickCount;
-        private int _lastCalcBar;
+        private int  _tickCount;
+        private int  _barTickCount;
+        private int  _lastCalcBar;
+        private bool _alertFiredThisBar;
 
         public TradesAlert_v2(object ctx) : base(ctx)
         {
@@ -41,10 +42,11 @@ namespace PowerLanguage.Indicator
 
         protected override void StartCalc()
         {
-            _tickCount    = 0;
-            _barTickCount = 0;
-            _lastCalcBar  = -1;
-            Output.WriteLine("=== TradesAlert_v2 v3.2 START [{0}] {1} ===",
+            _tickCount         = 0;
+            _barTickCount      = 0;
+            _lastCalcBar       = -1;
+            _alertFiredThisBar = false;
+            Output.WriteLine("=== TradesAlert_v2 v3.4 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Логика: сигнал = {0} подряд уровней где |Ask-Bid| >= {1}% от maxTotal",
                 MinStackHeight, LevelImbalancePct);
@@ -79,8 +81,9 @@ namespace PowerLanguage.Indicator
             {
                 if (Bars.CurrentBar != _lastCalcBar)
                 {
-                    _lastCalcBar  = Bars.CurrentBar;
-                    _barTickCount = 0;
+                    _lastCalcBar       = Bars.CurrentBar;
+                    _barTickCount      = 0;
+                    _alertFiredThisBar = false;
                 }
                 _barTickCount++;
             }
@@ -177,8 +180,10 @@ namespace PowerLanguage.Indicator
 
             // --- Логирование и алерт ---
             // Алерт и лог: на формирующемся баре, после LogEveryNTicks тиков
-            bool isAlertTick = isLastBar && _barTickCount == LogEveryNTicks;
-            bool logFull     = isLastBar && (isAlertTick || _barTickCount % LogEveryNTicks == 0);
+            // FIXED v3.4: флаг чтобы алерт сработал ровно один раз при первом >= LogEveryNTicks тике
+            bool isAlertTick = isLastBar && !_alertFiredThisBar && _barTickCount >= LogEveryNTicks;
+            if (isAlertTick) _alertFiredThisBar = true;
+            bool logFull     = isLastBar && (_barTickCount % LogEveryNTicks == 0);
             if (logFull)
             {
                 string instrument = Bars.Info.Name;
@@ -221,6 +226,8 @@ namespace PowerLanguage.Indicator
                         plotSide, plotLen, plotStart, levels[plotStart].Price);
                     if (isAlertTick)
                     {
+                        Output.WriteLine("[ALERT] Вызов Alerts.Alert() | {0} | instrument={1} BarTick={2}",
+                            DateTime.Now.ToString("HH:mm:ss"), instrument, _barTickCount);
                         var sb = new System.Text.StringBuilder();
                         sb.AppendFormat("=== SIGNAL: {0} | {1} | {2} ===\n", plotSide, instrument, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                         sb.AppendFormat("Stack: {0} levels from index {1}, price {2:F5}\n", plotLen, plotStart, levels[plotStart].Price);

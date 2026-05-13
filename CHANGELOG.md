@@ -1,5 +1,14 @@
 # Changelog
 
+## [v3.4] — 2026-05-07
+
+### Fixed
+- **Алерт ровно 1 раз на бар**: добавлен флаг `_alertFiredThisBar`, который сбрасывается при смене бара и взводится при первом срабатывании. Условие алерта изменено с `_barTickCount == LogEveryNTicks` на `!_alertFiredThisBar && _barTickCount >= LogEveryNTicks` — больше нет пропусков, если тик быстро превысил порог.
+- **Лог `logFull`** отвязан от `isAlertTick` — теперь периодический лог не зависит от того, выстрелил ли алерт.
+
+### Added
+- Лог-строка `[ALERT] Вызов Alerts.Alert() | <time> | instrument=... BarTick=...` при каждом срабатывании.
+
 ## [v3.2] — 2026-05-01
 
 ### Changed

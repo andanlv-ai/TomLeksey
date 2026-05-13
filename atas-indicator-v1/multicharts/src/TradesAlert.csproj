@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>7.3</LangVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>TradesAlert</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="PLStudiesProxy">
+      <HintPath>C:\Program Files\TS Support\MultiCharts .NET64 Special Edition\PLStudiesProxy.dll</HintPath>
+    </Reference>
+    <Reference Include="PLCommon">
+      <HintPath>C:\Program Files\TS Support\MultiCharts .NET64 Special Edition\PLCommon.dll</HintPath>
+    </Reference>
+    <Reference Include="PLTypes">
+      <HintPath>C:\Program Files\TS Support\MultiCharts .NET64 Special Edition\PLTypes.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="TradesAlert.Indicator.CS" />
+    <Compile Include="TradesAlert_v2.Indicator.CS" />
+  </ItemGroup>
+</Project>
