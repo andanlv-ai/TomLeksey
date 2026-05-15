@@ -1,5 +1,5 @@
 // DivergenceDetector.Indicator.MC.CS — дивергенция: цена vs Ask/Bid дельта (VolumeProfile)
-// Версия: 2026-05-15-v4.0
+// Версия: 2026-05-15-v4.1
 // Путь: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\DivergenceDetector.Indicator.CS
 //
 // Требует: на чарте включён Volume Profile (Format Instrument → Volume Profile):
@@ -8,7 +8,10 @@
 //   - Breakdown by = Ask vs Bid Traded Delta
 //   - Time → Every: 1 Bar
 //
-// Ключевое отличие от v1.5: ItemForBar требует АБСОЛЮТНЫЙ bar number = Bars.FullSymbolData.Current
+// v4.1 fix: delta-история через собственный rolling buffer.
+//   GetBarDelta() вызывается только с barsAgo=0 (текущий бар — ItemForBar работает надёжно).
+//   Для проверки N предыдущих баров используется _deltaHistory, а не повторный ItemForBar(absBar-N),
+//   который на исторических барах возвращает null и ломает N-bar consecutive логику.
 
 using System;
 using System.Collections.Generic;
@@ -24,8 +27,8 @@ namespace PowerLanguage.Indicator
         [Input] public int  NBars       { get; set; }
         [Input] public bool LogEveryBar { get; set; }
 
-        private IPlotObject _plot;
-        private List<IProfile> _itemsCache;
+        private IPlotObject    _plot;
+        private List<decimal>  _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
@@ -42,8 +45,8 @@ namespace PowerLanguage.Indicator
         protected override void StartCalc()
         {
             if (NBars < 2) NBars = 2;
-            _itemsCache = null;
-            Output.WriteLine("=== DivergenceDetector v4.0 START [{0}] {1} ===",
+            _deltaHistory = new List<decimal>();
+            Output.WriteLine("=== DivergenceDetector v4.1 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Params: NBars={0}", NBars);
         }
@@ -89,6 +92,12 @@ namespace PowerLanguage.Indicator
                     Bars.CurrentBar, absBar, itemsCount, pEmpty, askD, bidD);
             }
 
+            // Обновляем историю дельт (только barsAgo=0 — надёжно работает)
+            decimal curDelta = GetCurrentDelta();
+            _deltaHistory.Insert(0, curDelta);
+            if (_deltaHistory.Count > NBars + 1)
+                _deltaHistory.RemoveAt(_deltaHistory.Count - 1);
+
             if (Bars.CurrentBar <= NBars + 1) { _plot.Set(0, 0); return; }
 
             int priceDir = GetPriceDir();
@@ -107,7 +116,6 @@ namespace PowerLanguage.Indicator
 
             if (LogEveryBar || Bars.LastBarOnChart)
             {
-                decimal curDelta = GetBarDelta(0);
                 Output.WriteLine("BAR#{0} price={1} delta={2} sig={3}  rawDelta={4}",
                     Bars.CurrentBar, priceDir, deltaDir, signal, curDelta);
             }
@@ -124,21 +132,22 @@ namespace PowerLanguage.Indicator
             return up ? 1 : dn ? -1 : 0;
         }
 
-        // direction дельты по последним N барам: 1 = все ask>bid, -1 = все bid>ask, 0 = смешанные
+        // direction дельты по N последним барам — читает из _deltaHistory, не вызывает ItemForBar
         private int GetDeltaDir()
         {
+            if (_deltaHistory.Count < NBars) return 0;
             bool up = true, dn = true;
             for (int i = 0; i < NBars; i++)
             {
-                decimal d = GetBarDelta(i);
+                decimal d = _deltaHistory[i];
                 if (d <= 0) up = false;
                 if (d >= 0) dn = false;
             }
             return up ? 1 : dn ? -1 : 0;
         }
 
-        // дельта для бара (i баров назад от текущего): ask - bid traded
-        private decimal GetBarDelta(int barsAgo)
+        // дельта текущего бара: ask - bid traded (только barsAgo=0)
+        private decimal GetCurrentDelta()
         {
             var vp = this.VolumeProfile;
             if (vp == null) return 0;
@@ -146,27 +155,8 @@ namespace PowerLanguage.Indicator
             var svc = vp as IProfilesCollectionService;
             if (svc != null) svc.Syncronize();
 
-            int absBar = Bars.FullSymbolData.Current - barsAgo;
-
-            // Шаг 1: ItemForBar с абсолютным номером
             IProfile p = null;
-            try { p = vp.ItemForBar(absBar); } catch { }
-
-            // Шаг 2: fallback на bulk-кэш по относительному индексу
-            if (p == null || p.Empty)
-            {
-                if (_itemsCache == null)
-                {
-                    _itemsCache = new List<IProfile>();
-                    try { foreach (IProfile it in vp.Items) _itemsCache.Add(it); } catch { }
-                }
-                if (_itemsCache.Count > 0)
-                {
-                    int idx = _itemsCache.Count - 1 - barsAgo;
-                    if (idx >= 0 && idx < _itemsCache.Count) p = _itemsCache[idx];
-                }
-            }
-
+            try { p = vp.ItemForBar(Bars.FullSymbolData.Current); } catch { }
             if (p == null || p.Empty) return 0;
 
             decimal ask = 0, bid = 0;
