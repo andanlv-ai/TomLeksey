@@ -1,0 +1,77 @@
+{ DivergenceDetector.Indicator.MC.pla
+  Версия: 2026-05-15-v2.0 (PowerLanguage rewrite)
+  Детектор дивергенции: цена vs тиковая дельта (UpTicks vs DnTicks).
+
+  Как импортировать в MC:
+    PowerLanguage Editor → File → Import Study → выбрать этот файл
+    Или: File → New → Indicator → вставить код вручную → F3 (Build)
+
+  Условия сигнала (любое):
+    1. Цена вверх N баров  + дельта вниз N баров   → красный (медвежья дивергенция)
+    2. Цена вниз N баров   + дельта вверх N баров  → зелёный (бычья дивергенция)
+    3. Цена во флэте       + дельта вниз N баров   → красный
+    4. Цена во флэте       + дельта вверх N баров  → зелёный
+
+  "Цена во флэте" = не выполнено ни условие N баров вверх, ни N баров вниз.
+  "Дельта вниз N баров" = на каждом из последних N баров DnTicks > UpTicks.
+}
+
+Inputs:
+    NBars(2),           { число баров подряд для проверки направления }
+    LogEveryBar(false); { вывод в Output для каждого бара }
+
+Variables:
+    priceDir(0),    { 1=вверх, -1=вниз, 0=флэт }
+    deltaDir(0),    { 1=бычья, -1=медвежья, 0=смешанная }
+    signal(0),
+    pUp(true),
+    pDn(true),
+    dUp(true),
+    dDn(true),
+    i(0);
+
+{ --- Направление цены: N баров закрытий подряд выше/ниже предыдущего --- }
+pUp = true;
+pDn = true;
+For i = 0 to NBars - 2 Begin
+    If Close[i] <= Close[i + 1] Then pUp = false;
+    If Close[i] >= Close[i + 1] Then pDn = false;
+End;
+If pUp Then priceDir = 1
+Else If pDn Then priceDir = -1
+Else priceDir = 0;
+
+{ --- Направление дельты: UpTicks vs DnTicks на каждом из N последних баров --- }
+dUp = true;
+dDn = true;
+For i = 0 to NBars - 1 Begin
+    If UpTicks(i) <= DnTicks(i) Then dUp = false;
+    If UpTicks(i) >= DnTicks(i) Then dDn = false;
+End;
+If dUp Then deltaDir = 1
+Else If dDn Then deltaDir = -1
+Else deltaDir = 0;
+
+{ --- Сигнал дивергенции --- }
+signal = 0;
+If priceDir =  1 And deltaDir = -1 Then signal = 1;
+If priceDir = -1 And deltaDir =  1 Then signal = 1;
+If priceDir =  0 And deltaDir <> 0 Then signal = 1;
+
+{ --- Плот (гистограмма 0/1) --- }
+Plot1(signal, "Divergence");
+
+If signal = 1 Then Begin
+    If deltaDir = -1 Then SetPlotColor(1, Red)
+    Else SetPlotColor(1, Lime);
+End
+Else SetPlotColor(1, DarkGray);
+
+{ --- Лог --- }
+If LogEveryBar Or LastBarOnChart Then
+    Print("BAR#", CurrentBar:0:0,
+          " price=", priceDir:0:0,
+          " delta=", deltaDir:0:0,
+          " sig=", signal:0:0,
+          " upT=", UpTicks(0):0:0,
+          " dnT=", DnTicks(0):0:0);
