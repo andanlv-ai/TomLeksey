@@ -16,6 +16,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Net;
+using System.Net.Mail;
+using System.Threading.Tasks;
 using PowerLanguage.VolumeProfile;
 
 namespace PowerLanguage.Indicator
@@ -24,16 +27,31 @@ namespace PowerLanguage.Indicator
     [SameAsSymbol(false)]
     public class DivergenceDetector : IndicatorObject
     {
-        [Input] public int  NBars       { get; set; }
-        [Input] public bool LogEveryBar { get; set; }
+        [Input] public int    NBars        { get; set; }
+        [Input] public bool   LogEveryBar  { get; set; }
+        [Input] public bool   EmailEnabled { get; set; }
+        [Input] public string AlertToEmail { get; set; }
+        [Input] public string SmtpHost     { get; set; }
+        [Input] public int    SmtpPort     { get; set; }
+        [Input] public bool   SmtpUseSsl   { get; set; }
+        [Input] public string SmtpUser     { get; set; }
+        [Input] public string SmtpPassword { get; set; }
 
         private IPlotObject    _plot;
         private List<decimal>  _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
+        private int            _lastAlertBar;
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
-            NBars       = 2;
-            LogEveryBar = false;
+            NBars        = 2;
+            LogEveryBar  = false;
+            EmailEnabled = false;
+            AlertToEmail = "";
+            SmtpHost     = "";
+            SmtpPort     = 587;
+            SmtpUseSsl   = true;
+            SmtpUser     = "";
+            SmtpPassword = "";
         }
 
         protected override void Create()
@@ -46,6 +64,7 @@ namespace PowerLanguage.Indicator
         {
             if (NBars < 2) NBars = 2;
             _deltaHistory = new List<decimal>();
+            _lastAlertBar = -1;
             Output.WriteLine("=== DivergenceDetector v4.1 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Params: NBars={0}", NBars);
@@ -114,6 +133,13 @@ namespace PowerLanguage.Indicator
             _plot.Set(0, signal);
             _plot.Colors[0] = color;
 
+            if (signal == 1 && EmailEnabled && Bars.LastBarOnChart && _lastAlertBar != Bars.CurrentBar)
+            {
+                _lastAlertBar = Bars.CurrentBar;
+                string signalType = color == Color.Red ? "BEARISH" : "BULLISH";
+                SendAlertEmail(signalType, priceDir, deltaDir, curDelta);
+            }
+
             if (LogEveryBar || Bars.LastBarOnChart)
             {
                 Output.WriteLine("BAR#{0} price={1} delta={2} sig={3}  rawDelta={4}",
@@ -144,6 +170,42 @@ namespace PowerLanguage.Indicator
                 if (d >= 0) dn = false;
             }
             return up ? 1 : dn ? -1 : 0;
+        }
+
+        private void SendAlertEmail(string signalType, int priceDir, int deltaDir, decimal delta)
+        {
+            string symbol = Bars.Info.Name;
+            string subj   = string.Format("[{0}] DIVERGENCE {1}", symbol, signalType);
+            string body   = string.Format(
+                "Symbol:    {0}\nSignal:    {1} divergence\nPriceDir:  {2}\nDeltaDir:  {3}\nDelta:     {4}\nUTC:       {5:yyyy-MM-dd HH:mm:ss}",
+                symbol, signalType,
+                priceDir ==  1 ? "UP" : priceDir == -1 ? "DOWN" : "FLAT",
+                deltaDir ==  1 ? "UP" : deltaDir == -1 ? "DOWN" : "FLAT",
+                delta, DateTime.UtcNow);
+
+            string host = SmtpHost; int port = SmtpPort; bool ssl = SmtpUseSsl;
+            string user = SmtpUser; string pass = SmtpPassword; string to = AlertToEmail;
+            string from = string.IsNullOrWhiteSpace(user) ? "alert@localhost" : user;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    ServicePointManager.ServerCertificateValidationCallback =
+                        (sender, cert, chain, errors) => true;
+                    using (var client = new SmtpClient(host, port))
+                    {
+                        client.EnableSsl      = ssl;
+                        client.DeliveryMethod = SmtpDeliveryMethod.Network;
+                        client.Timeout        = 10000;
+                        if (!string.IsNullOrWhiteSpace(user))
+                            client.Credentials = new NetworkCredential(user, pass);
+                        using (var msg = new MailMessage(from, to, subj, body))
+                            client.Send(msg);
+                    }
+                }
+                catch { }
+            });
         }
 
         // дельта текущего бара: ask - bid traded (только barsAgo=0)
