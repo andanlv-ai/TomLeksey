@@ -1,5 +1,5 @@
 // DivergenceDetector.Indicator.MC.CS — дивергенция: цена vs Ask/Bid дельта (VolumeProfile)
-// Версия: 2026-05-15-v4.1
+// Версия: 2026-05-15-v4.3
 // Путь: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\DivergenceDetector.Indicator.CS
 //
 // Требует: на чарте включён Volume Profile (Format Instrument → Volume Profile):
@@ -34,24 +34,25 @@ namespace PowerLanguage.Indicator
         [Input] public string SmtpHost     { get; set; }
         [Input] public int    SmtpPort     { get; set; }
         [Input] public bool   SmtpUseSsl   { get; set; }
-        [Input] public string SmtpUser     { get; set; }
-        [Input] public string SmtpPassword { get; set; }
+        [Input] public string SmtpUser         { get; set; }
+        [Input] public string SmtpPasswordFile { get; set; }  // путь к файлу с паролем
 
         private IPlotObject    _plot;
         private List<decimal>  _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
         private int            _lastAlertBar;
+        private bool           _prevEmailEnabled;
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
-            NBars        = 2;
-            LogEveryBar  = false;
-            EmailEnabled = false;
-            AlertToEmail = "";
-            SmtpHost     = "";
-            SmtpPort     = 587;
-            SmtpUseSsl   = true;
-            SmtpUser     = "";
-            SmtpPassword = "";
+            NBars            = 2;
+            LogEveryBar      = false;
+            EmailEnabled     = false;
+            AlertToEmail     = "andan@mateos.lv";
+            SmtpHost         = "192.168.1.211";
+            SmtpPort         = 587;
+            SmtpUseSsl       = true;
+            SmtpUser         = "andan@mateos.lv";
+            SmtpPasswordFile = @"C:\Users\user\.smtp_pass";
         }
 
         protected override void Create()
@@ -65,9 +66,13 @@ namespace PowerLanguage.Indicator
             if (NBars < 2) NBars = 2;
             _deltaHistory = new List<decimal>();
             _lastAlertBar = -1;
-            Output.WriteLine("=== DivergenceDetector v4.1 START [{0}] {1} ===",
+            Output.WriteLine("=== DivergenceDetector v4.3 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Params: NBars={0}", NBars);
+
+            if (EmailEnabled && !_prevEmailEnabled)
+                SendAlertEmail("TEST_EMAIL_OK", 0, 0, 0);
+            _prevEmailEnabled = EmailEnabled;
         }
 
         protected override void CalcBar()
@@ -127,8 +132,6 @@ namespace PowerLanguage.Indicator
 
             if      (priceDir ==  1 && deltaDir == -1) { signal = 1; color = Color.Red;  }
             else if (priceDir == -1 && deltaDir ==  1) { signal = 1; color = Color.Lime; }
-            else if (priceDir ==  0 && deltaDir == -1) { signal = 1; color = Color.Red;  }
-            else if (priceDir ==  0 && deltaDir ==  1) { signal = 1; color = Color.Lime; }
 
             _plot.Set(0, signal);
             _plot.Colors[0] = color;
@@ -184,8 +187,11 @@ namespace PowerLanguage.Indicator
                 delta, DateTime.UtcNow);
 
             string host = SmtpHost; int port = SmtpPort; bool ssl = SmtpUseSsl;
-            string user = SmtpUser; string pass = SmtpPassword; string to = AlertToEmail;
+            string user = SmtpUser; string to = AlertToEmail;
             string from = string.IsNullOrWhiteSpace(user) ? "alert@localhost" : user;
+            string pass = "";
+            try { if (!string.IsNullOrWhiteSpace(SmtpPasswordFile)) pass = System.IO.File.ReadAllText(SmtpPasswordFile).Trim(); }
+            catch (Exception ex) { Output.WriteLine("SMTP password file error: {0}", ex.Message); }
 
             Task.Run(() =>
             {
