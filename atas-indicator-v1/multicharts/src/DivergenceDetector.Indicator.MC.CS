@@ -1,5 +1,5 @@
 // DivergenceDetector.Indicator.MC.CS — дивергенция: цена vs Ask/Bid дельта (VolumeProfile)
-// Версия: 2026-05-15-v4.3
+// Версия: 2026-05-17-v4.4
 // Путь: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\DivergenceDetector.Indicator.CS
 //
 // Требует: на чарте включён Volume Profile (Format Instrument → Volume Profile):
@@ -39,6 +39,7 @@ namespace PowerLanguage.Indicator
 
         private IPlotObject    _plot;
         private List<decimal>  _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
+        private decimal        _prevVolume;
         private int            _lastAlertBar;
         private bool           _prevEmailEnabled;
 
@@ -65,8 +66,9 @@ namespace PowerLanguage.Indicator
         {
             if (NBars < 2) NBars = 2;
             _deltaHistory = new List<decimal>();
+            _prevVolume   = 0;
             _lastAlertBar = -1;
-            Output.WriteLine("=== DivergenceDetector v4.3 START [{0}] {1} ===",
+            Output.WriteLine("=== DivergenceDetector v4.4 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Output.WriteLine("    Params: NBars={0}", NBars);
 
@@ -117,10 +119,14 @@ namespace PowerLanguage.Indicator
             }
 
             // Обновляем историю дельт (только barsAgo=0 — надёжно работает)
-            decimal curDelta = GetCurrentDelta();
+            decimal curVolume = 0;
+            decimal curDelta  = GetCurrentDeltaAndVolume(out curVolume);
             _deltaHistory.Insert(0, curDelta);
             if (_deltaHistory.Count > NBars + 1)
                 _deltaHistory.RemoveAt(_deltaHistory.Count - 1);
+
+            bool volCondition = curVolume > _prevVolume;
+            _prevVolume = curVolume;
 
             if (Bars.CurrentBar <= NBars + 1) { _plot.Set(0, 0); return; }
 
@@ -130,8 +136,8 @@ namespace PowerLanguage.Indicator
             int   signal = 0;
             Color color  = Color.Gray;
 
-            if      (priceDir ==  1 && deltaDir == -1) { signal = 1; color = Color.Red;  }
-            else if (priceDir == -1 && deltaDir ==  1) { signal = 1; color = Color.Lime; }
+            if      (priceDir ==  1 && deltaDir == -1 && volCondition) { signal = 1; color = Color.Red;  }
+            else if (priceDir == -1 && deltaDir ==  1 && volCondition) { signal = 1; color = Color.Lime; }
 
             _plot.Set(0, signal);
             _plot.Colors[0] = color;
@@ -145,8 +151,8 @@ namespace PowerLanguage.Indicator
 
             if (LogEveryBar || Bars.LastBarOnChart)
             {
-                Output.WriteLine("BAR#{0} price={1} delta={2} sig={3}  rawDelta={4}",
-                    Bars.CurrentBar, priceDir, deltaDir, signal, curDelta);
+                Output.WriteLine("BAR#{0} price={1} delta={2} sig={3}  rawDelta={4} vol={5} prevVol={6}",
+                    Bars.CurrentBar, priceDir, deltaDir, signal, curDelta, curVolume, _prevVolume);
             }
         }
 
@@ -214,26 +220,32 @@ namespace PowerLanguage.Indicator
             });
         }
 
-        // дельта текущего бара: ask - bid traded (только barsAgo=0)
-        private decimal GetCurrentDelta()
+        // дельта и объём текущего бара из VolumeProfile; fallback объёма — Bars.Volume[0]
+        private decimal GetCurrentDeltaAndVolume(out decimal volume)
         {
+            volume = 0;
             var vp = this.VolumeProfile;
-            if (vp == null) return 0;
-
-            var svc = vp as IProfilesCollectionService;
-            if (svc != null) svc.Syncronize();
-
-            IProfile p = null;
-            try { p = vp.ItemForBar(Bars.FullSymbolData.Current); } catch { }
-            if (p == null || p.Empty) return 0;
-
-            decimal ask = 0, bid = 0;
-            foreach (ILevel lv in p.Values)
+            if (vp != null)
             {
-                ask += lv.AskTradedValue;
-                bid += lv.BidTradedValue;
+                var svc = vp as IProfilesCollectionService;
+                if (svc != null) svc.Syncronize();
+
+                IProfile p = null;
+                try { p = vp.ItemForBar(Bars.FullSymbolData.Current); } catch { }
+                if (p != null && !p.Empty)
+                {
+                    decimal ask = 0, bid = 0;
+                    foreach (ILevel lv in p.Values)
+                    {
+                        ask += lv.AskTradedValue;
+                        bid += lv.BidTradedValue;
+                    }
+                    volume = ask + bid;
+                    return ask - bid;
+                }
             }
-            return ask - bid;
+            volume = (decimal)Bars.Volume[0];
+            return 0;
         }
     }
 }

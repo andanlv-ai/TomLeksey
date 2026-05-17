@@ -1,5 +1,14 @@
 # Changelog
 
+## [v4.4] — 2026-05-17 (DivergenceDetector)
+
+### Added
+- **Фильтр по объёму**: сигнал дивергенции срабатывает только если объём текущего бара больше объёма предыдущего. Объём берётся из VolumeProfile (Ask+Bid traded), fallback — `Bars.Volume[0]`.
+
+### Changed
+- `GetCurrentDelta()` → `GetCurrentDeltaAndVolume(out decimal volume)`: один проход по `ILevel` возвращает и дельту, и объём.
+- Лог последнего бара теперь включает `vol` и `prevVol` для диагностики.
+
 ## [v3.4] — 2026-05-07
 
 ### Fixed
