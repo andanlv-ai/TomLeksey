@@ -1,5 +1,5 @@
 // DivergenceDetector.Indicator.MC.CS — дивергенция: цена vs Ask/Bid дельта (VolumeProfile)
-// Версия: 2026-05-17-v4.5
+// Версия: 2026-05-17-v4.6
 // Путь: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\DivergenceDetector.Indicator.CS
 //
 // Требует: на чарте включён Volume Profile (Format Instrument → Volume Profile):
@@ -29,6 +29,10 @@ namespace PowerLanguage.Indicator
     {
         [Input] public int    NBars        { get; set; }
         [Input] public int    StreakBars   { get; set; }
+        [Input] public int    AtrPeriod    { get; set; }
+        [Input] public double MaxRangeATR  { get; set; }
+        [Input] public bool   UseNRFilter  { get; set; }
+        [Input] public int    NRLookback   { get; set; }
         [Input] public bool   LogEveryBar  { get; set; }
         [Input] public bool   EmailEnabled { get; set; }
         [Input] public string AlertToEmail { get; set; }
@@ -38,17 +42,22 @@ namespace PowerLanguage.Indicator
         [Input] public string SmtpUser         { get; set; }
         [Input] public string SmtpPasswordFile { get; set; }  // путь к файлу с паролем
 
-        private IPlotObject    _plot;
-        private IPlotObject    _plotStreak;
-        private List<decimal>  _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
-        private decimal        _prevVolume;
-        private int            _lastAlertBar;
-        private bool           _prevEmailEnabled;
+        private IPlotObject              _plot;
+        private IPlotObject              _plotStreak;
+        private List<decimal>            _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
+        private decimal                  _prevVolume;
+        private int                      _lastAlertBar;
+        private bool                     _prevEmailEnabled;
+        private Function.AverageTrueRange _atr;
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
             NBars            = 2;
             StreakBars       = 3;
+            AtrPeriod        = 14;
+            MaxRangeATR      = 0.7;
+            UseNRFilter      = false;
+            NRLookback       = 7;
             LogEveryBar      = false;
             EmailEnabled     = false;
             AlertToEmail     = "andan@mateos.lv";
@@ -65,18 +74,23 @@ namespace PowerLanguage.Indicator
                                                      Color.Gray, Color.Empty, 4, 0, true));
             _plotStreak = AddPlot(new PlotAttributes("Streak",     EPlotShapes.Histogram,
                                                      Color.Blue,   Color.Empty, 4, 0, true));
+            _atr = new Function.AverageTrueRange(this);
         }
 
         protected override void StartCalc()
         {
             if (NBars < 2) NBars = 2;
             if (StreakBars < 3) StreakBars = 3;
+            if (AtrPeriod < 1) AtrPeriod = 1;
+            if (NRLookback < 2) NRLookback = 2;
+            _atr.Length = AtrPeriod;
             _deltaHistory = new List<decimal>();
             _prevVolume   = 0;
             _lastAlertBar = -1;
-            Output.WriteLine("=== DivergenceDetector v4.5 START [{0}] {1} ===",
+            Output.WriteLine("=== DivergenceDetector v4.6 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
-            Output.WriteLine("    Params: NBars={0} StreakBars={1}", NBars, StreakBars);
+            Output.WriteLine("    Params: NBars={0} StreakBars={1} AtrPeriod={2} MaxRangeATR={3} UseNRFilter={4}",
+                NBars, StreakBars, AtrPeriod, MaxRangeATR, UseNRFilter);
 
             if (EmailEnabled && !_prevEmailEnabled)
                 SendAlertEmail("TEST_EMAIL_OK", 0, 0, 0);
@@ -150,9 +164,10 @@ namespace PowerLanguage.Indicator
             _plot.Set(0, signal);
             _plot.Colors[0] = color;
 
-            // Streak: синий ниже нуля когда StreakBars+ баров дельта одного знака
+            // Streak: синий ниже нуля когда StreakBars+ баров дельта одного знака + цена в узком диапазоне
             int streakDir = GetStreakDir();
-            if (streakDir != 0)
+            bool narrow = streakDir != 0 && IsNarrowRange();
+            if (narrow)
             {
                 _plotStreak.Set(0, -1);
                 _plotStreak.Colors[0] = Color.Blue;
@@ -172,8 +187,16 @@ namespace PowerLanguage.Indicator
 
             if (LogEveryBar || Bars.LastBarOnChart)
             {
-                Output.WriteLine("BAR#{0} price={1} delta={2} sig={3}  rawDelta={4} vol={5} prevVol={6}",
-                    Bars.CurrentBar, priceDir, deltaDir, signal, curDelta, curVolume, _prevVolume);
+                double atrVal = _atr[0];
+                double hh = double.MinValue, ll = double.MaxValue;
+                for (int i = 1; i <= StreakBars; i++)
+                {
+                    if (Bars.High[i] > hh) hh = Bars.High[i];
+                    if (Bars.Low[i]  < ll) ll = Bars.Low[i];
+                }
+                double rangeRatio = atrVal > 0 ? (hh - ll) / atrVal : -1;
+                Output.WriteLine("BAR#{0} price={1} delta={2} sig={3} streak={4} narrow={5} rangeATR={6:F3} rawDelta={7} vol={8}",
+                    Bars.CurrentBar, priceDir, deltaDir, signal, streakDir, narrow, rangeRatio, curDelta, curVolume);
             }
         }
 
@@ -213,6 +236,31 @@ namespace PowerLanguage.Indicator
                 if (_deltaHistory[i] >= 0) dn = false;
             }
             return up ? 1 : dn ? -1 : 0;
+        }
+
+        // Возвращает true если размах окна StreakBars предыдущих баров узкий относительно ATR
+        private bool IsNarrowRange()
+        {
+            if (Bars.CurrentBar <= Math.Max(StreakBars, AtrPeriod) + 1) return false;
+
+            double hh = double.MinValue, ll = double.MaxValue;
+            for (int i = 1; i <= StreakBars; i++)
+            {
+                if (Bars.High[i] > hh) hh = Bars.High[i];
+                if (Bars.Low[i]  < ll) ll = Bars.Low[i];
+            }
+
+            double atrVal = _atr[0];
+            if (atrVal <= 0) return false;
+            if ((hh - ll) / atrVal > MaxRangeATR) return false;
+
+            if (UseNRFilter)
+            {
+                double curRange = Bars.High[0] - Bars.Low[0];
+                for (int i = 1; i <= NRLookback; i++)
+                    if ((Bars.High[i] - Bars.Low[i]) <= curRange) return false;
+            }
+            return true;
         }
 
         private void SendAlertEmail(string signalType, int priceDir, int deltaDir, decimal delta)

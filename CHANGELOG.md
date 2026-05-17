@@ -1,5 +1,22 @@
 # Changelog
 
+## [v4.6] — 2026-05-17 (DivergenceDetector)
+
+### Added
+- **Фильтр узкого диапазона для streak-плота**: синий бар теперь рисуется только когда цена в окне `StreakBars` предыдущих баров почти не движется — паттерн absorption/accumulation. Условие: `(HH−LL окна) / ATR(AtrPeriod) ≤ MaxRangeATR`.
+- Новые Input-параметры: `AtrPeriod=14`, `MaxRangeATR=0.7`, `UseNRFilter=false`, `NRLookback=7`.
+- Метод `IsNarrowRange()` использует встроенный `Function.AverageTrueRange`.
+- Лог-строка расширена полями `streak`, `narrow`, `rangeATR` для диагностики.
+
+### Changed
+- Streak-плот теперь требует одновременно: `GetStreakDir() != 0` **и** `IsNarrowRange() == true`.
+- Дивергентный плот (`_plot`, Red/Lime) и email-алерты — без изменений.
+
+## [v4.5] — 2026-05-17 (DivergenceDetector)
+
+### Added
+- **Streak plot**: синий гистограммный бар вниз когда `StreakBars` (по умолчанию 3) предыдущих баров имеют дельту одного знака. Input `StreakBars`.
+
 ## [v4.4] — 2026-05-17 (DivergenceDetector)
 
 ### Added
