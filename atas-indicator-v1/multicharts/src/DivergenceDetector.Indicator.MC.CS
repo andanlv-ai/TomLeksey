@@ -170,7 +170,7 @@ namespace PowerLanguage.Indicator
             if (narrow)
             {
                 _plotStreak.Set(0, -1);
-                _plotStreak.Colors[0] = Color.Blue;
+                _plotStreak.Colors[0] = streakDir == -1 ? Color.Blue : Color.Orange;
             }
             else
             {
