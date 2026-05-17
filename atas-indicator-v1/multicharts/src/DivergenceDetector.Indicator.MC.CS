@@ -1,5 +1,5 @@
 // DivergenceDetector.Indicator.MC.CS — дивергенция: цена vs Ask/Bid дельта (VolumeProfile)
-// Версия: 2026-05-17-v4.4
+// Версия: 2026-05-17-v4.5
 // Путь: C:\ProgramData\TS Support\MultiCharts .NET64 Special Edition\StudyServer\Techniques\CS\DivergenceDetector.Indicator.CS
 //
 // Требует: на чарте включён Volume Profile (Format Instrument → Volume Profile):
@@ -28,6 +28,7 @@ namespace PowerLanguage.Indicator
     public class DivergenceDetector : IndicatorObject
     {
         [Input] public int    NBars        { get; set; }
+        [Input] public int    StreakBars   { get; set; }
         [Input] public bool   LogEveryBar  { get; set; }
         [Input] public bool   EmailEnabled { get; set; }
         [Input] public string AlertToEmail { get; set; }
@@ -38,6 +39,7 @@ namespace PowerLanguage.Indicator
         [Input] public string SmtpPasswordFile { get; set; }  // путь к файлу с паролем
 
         private IPlotObject    _plot;
+        private IPlotObject    _plotStreak;
         private List<decimal>  _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
         private decimal        _prevVolume;
         private int            _lastAlertBar;
@@ -46,6 +48,7 @@ namespace PowerLanguage.Indicator
         public DivergenceDetector(object ctx) : base(ctx)
         {
             NBars            = 2;
+            StreakBars       = 3;
             LogEveryBar      = false;
             EmailEnabled     = false;
             AlertToEmail     = "andan@mateos.lv";
@@ -58,19 +61,22 @@ namespace PowerLanguage.Indicator
 
         protected override void Create()
         {
-            _plot = AddPlot(new PlotAttributes("Divergence", EPlotShapes.Histogram,
-                                               Color.Gray, Color.Empty, 4, 0, true));
+            _plot       = AddPlot(new PlotAttributes("Divergence", EPlotShapes.Histogram,
+                                                     Color.Gray, Color.Empty, 4, 0, true));
+            _plotStreak = AddPlot(new PlotAttributes("Streak",     EPlotShapes.Histogram,
+                                                     Color.Blue,   Color.Empty, 4, 0, true));
         }
 
         protected override void StartCalc()
         {
             if (NBars < 2) NBars = 2;
+            if (StreakBars < 3) StreakBars = 3;
             _deltaHistory = new List<decimal>();
             _prevVolume   = 0;
             _lastAlertBar = -1;
-            Output.WriteLine("=== DivergenceDetector v4.4 START [{0}] {1} ===",
+            Output.WriteLine("=== DivergenceDetector v4.5 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
-            Output.WriteLine("    Params: NBars={0}", NBars);
+            Output.WriteLine("    Params: NBars={0} StreakBars={1}", NBars, StreakBars);
 
             if (EmailEnabled && !_prevEmailEnabled)
                 SendAlertEmail("TEST_EMAIL_OK", 0, 0, 0);
@@ -122,17 +128,19 @@ namespace PowerLanguage.Indicator
             decimal curVolume = 0;
             decimal curDelta  = GetCurrentDeltaAndVolume(out curVolume);
             _deltaHistory.Insert(0, curDelta);
-            if (_deltaHistory.Count > NBars + 1)
+            int maxHistory = Math.Max(NBars + 1, StreakBars + 1);
+            if (_deltaHistory.Count > maxHistory)
                 _deltaHistory.RemoveAt(_deltaHistory.Count - 1);
 
             bool volCondition = curVolume > _prevVolume;
             _prevVolume = curVolume;
 
-            if (Bars.CurrentBar <= NBars + 1) { _plot.Set(0, 0); return; }
+            if (Bars.CurrentBar <= NBars + 1) { _plot.Set(0, 0); _plotStreak.Set(0, 0); return; }
 
             int priceDir = GetPriceDir();
             int deltaDir = GetDeltaDir();
 
+            // Дивергенция: Red выше нуля (+1), Green ниже нуля (-1)
             int   signal = 0;
             Color color  = Color.Gray;
 
@@ -141,6 +149,19 @@ namespace PowerLanguage.Indicator
 
             _plot.Set(0, signal);
             _plot.Colors[0] = color;
+
+            // Streak: синий ниже нуля когда StreakBars+ баров дельта одного знака
+            int streakDir = GetStreakDir();
+            if (streakDir != 0)
+            {
+                _plotStreak.Set(0, -1);
+                _plotStreak.Colors[0] = Color.Blue;
+            }
+            else
+            {
+                _plotStreak.Set(0, 0);
+                _plotStreak.Colors[0] = Color.Gray;
+            }
 
             if (signal == 1 && EmailEnabled && Bars.LastBarOnChart && _lastAlertBar != Bars.CurrentBar)
             {
@@ -177,6 +198,19 @@ namespace PowerLanguage.Indicator
                 decimal d = _deltaHistory[i];
                 if (d <= 0) up = false;
                 if (d >= 0) dn = false;
+            }
+            return up ? 1 : dn ? -1 : 0;
+        }
+
+        // StreakBars+ предыдущих баров (без текущего) одного знака дельты
+        private int GetStreakDir()
+        {
+            if (_deltaHistory.Count <= StreakBars) return 0;
+            bool up = true, dn = true;
+            for (int i = 1; i <= StreakBars; i++)
+            {
+                if (_deltaHistory[i] <= 0) up = false;
+                if (_deltaHistory[i] >= 0) dn = false;
             }
             return up ? 1 : dn ? -1 : 0;
         }
