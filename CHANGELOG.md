@@ -2,15 +2,26 @@
 
 ## [v4.6] — 2026-05-17 (DivergenceDetector)
 
+Версия добавляет фильтр **absorption/accumulation** к streak-плоту и двухцветную индикацию
+направления дельты. Синяя/оранжевая полоска теперь появляется только в тех зонах, где
+цена топчется на месте, а давление покупателей или продавцов накапливается — классический
+признак поглощения перед разворотом или выходом из флэта.
+
 ### Added
-- **Фильтр узкого диапазона для streak-плота**: синий бар теперь рисуется только когда цена в окне `StreakBars` предыдущих баров почти не движется — паттерн absorption/accumulation. Условие: `(HH−LL окна) / ATR(AtrPeriod) ≤ MaxRangeATR`.
-- Новые Input-параметры: `AtrPeriod=14`, `MaxRangeATR=0.7`, `UseNRFilter=false`, `NRLookback=7`.
-- Метод `IsNarrowRange()` использует встроенный `Function.AverageTrueRange`.
-- Лог-строка расширена полями `streak`, `narrow`, `rangeATR` для диагностики.
+- **Фильтр узкого диапазона** (`UseNarrowFilter`, по умолчанию `false`): когда включён,
+  streak-бар рисуется только если размах High−Low окна `StreakBars` предыдущих баров
+  не превышает `MaxRangeATR × ATR(AtrPeriod)`. Отсекает streak'и в обычных трендах,
+  оставляет только зоны absorption/accumulation с почти неподвижной ценой.
+- **Двухцветный streak-плот**: дельта идёт вниз → синий (`Color.Blue`),
+  дельта идёт вверх → оранжевый (`Color.Orange`).
+- Новые Input-параметры: `UseNarrowFilter=false`, `AtrPeriod=14`, `MaxRangeATR=0.7`,
+  `UseNRFilter=false`, `NRLookback=7`.
+- Лог-строка расширена полями `streak`, `narrow`, `rangeATR` для диагностики порога.
 
 ### Changed
-- Streak-плот теперь требует одновременно: `GetStreakDir() != 0` **и** `IsNarrowRange() == true`.
-- Дивергентный плот (`_plot`, Red/Lime) и email-алерты — без изменений.
+- ATR вычисляется через встроенный extension method `this.AverageTrueRange(AtrPeriod)`
+  из `PowerLanguage.Function` (аналогично `Average_True_Range.Indicator.CS`).
+- Дивергентный плот (`_plot`, Red/Lime) и email-алерты не изменены.
 
 ## [v4.5] — 2026-05-17 (DivergenceDetector)
 
