@@ -42,13 +42,12 @@ namespace PowerLanguage.Indicator
         [Input] public string SmtpUser         { get; set; }
         [Input] public string SmtpPasswordFile { get; set; }  // путь к файлу с паролем
 
-        private IPlotObject              _plot;
-        private IPlotObject              _plotStreak;
-        private List<decimal>            _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
-        private decimal                  _prevVolume;
-        private int                      _lastAlertBar;
-        private bool                     _prevEmailEnabled;
-        private Function.AverageTrueRange _atr;
+        private IPlotObject   _plot;
+        private IPlotObject   _plotStreak;
+        private List<decimal> _deltaHistory;  // [0]=текущий, [1]=1 бар назад, ...
+        private decimal       _prevVolume;
+        private int           _lastAlertBar;
+        private bool          _prevEmailEnabled;
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
@@ -74,7 +73,6 @@ namespace PowerLanguage.Indicator
                                                      Color.Gray, Color.Empty, 4, 0, true));
             _plotStreak = AddPlot(new PlotAttributes("Streak",     EPlotShapes.Histogram,
                                                      Color.Blue,   Color.Empty, 4, 0, true));
-            _atr = new Function.AverageTrueRange(this);
         }
 
         protected override void StartCalc()
@@ -83,7 +81,6 @@ namespace PowerLanguage.Indicator
             if (StreakBars < 3) StreakBars = 3;
             if (AtrPeriod < 1) AtrPeriod = 1;
             if (NRLookback < 2) NRLookback = 2;
-            _atr.Length = AtrPeriod;
             _deltaHistory = new List<decimal>();
             _prevVolume   = 0;
             _lastAlertBar = -1;
@@ -187,7 +184,7 @@ namespace PowerLanguage.Indicator
 
             if (LogEveryBar || Bars.LastBarOnChart)
             {
-                double atrVal = _atr[0];
+                double atrVal = this.AverageTrueRange(AtrPeriod);
                 double hh = double.MinValue, ll = double.MaxValue;
                 for (int i = 1; i <= StreakBars; i++)
                 {
@@ -250,7 +247,7 @@ namespace PowerLanguage.Indicator
                 if (Bars.Low[i]  < ll) ll = Bars.Low[i];
             }
 
-            double atrVal = _atr[0];
+            double atrVal = this.AverageTrueRange(AtrPeriod);
             if (atrVal <= 0) return false;
             if ((hh - ll) / atrVal > MaxRangeATR) return false;
 
