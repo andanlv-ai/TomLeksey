@@ -30,6 +30,7 @@ namespace PowerLanguage.Indicator
     {
         [Input] public int    NBars        { get; set; }
         [Input] public int    StreakBars   { get; set; }
+        [Input] public bool   UseNarrowFilter { get; set; }
         [Input] public int    AtrPeriod    { get; set; }
         [Input] public double MaxRangeATR  { get; set; }
         [Input] public bool   UseNRFilter  { get; set; }
@@ -54,6 +55,7 @@ namespace PowerLanguage.Indicator
         {
             NBars            = 2;
             StreakBars       = 3;
+            UseNarrowFilter  = false;
             AtrPeriod        = 14;
             MaxRangeATR      = 0.7;
             UseNRFilter      = false;
@@ -164,7 +166,7 @@ namespace PowerLanguage.Indicator
 
             // Streak: синий ниже нуля когда StreakBars+ баров дельта одного знака + цена в узком диапазоне
             int streakDir = GetStreakDir();
-            bool narrow = streakDir != 0 && IsNarrowRange();
+            bool narrow = streakDir != 0 && (!UseNarrowFilter || IsNarrowRange());
             if (narrow)
             {
                 _plotStreak.Set(0, -1);
