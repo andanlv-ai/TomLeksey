@@ -45,9 +45,10 @@ namespace PowerLanguage.Strategy
         private string _sym;
         private List<TimeSpan[]> _news;
         private readonly List<LraRange> _ranges = new List<LraRange>();
-        private readonly Dictionary<string, LraPosition> _pos = new Dictionary<string, LraPosition>();  // книга -> позиция (наполняет тикет 10)
+        private readonly Dictionary<string, LraPosition> _pos = new Dictionary<string, LraPosition>();  // книга -> позиция (ТЗ §7)
 
         private const string RangesHeader = "Time,ParisTime,Symbol,RangeId,Event,Start,End,High,Low,Poc,Volume,Bars,ExitDir";
+        private const string TradesHeader = "CloseTime,ParisTime,Symbol,SignalId,Book,Unit,Dir,OpenTime,OpenPrice,SL,TP,ClosePrice,Exit,Pips,Usd,Ambiguous,Source,Version";
         private const string SignalsHeader = "Time,ParisTime,Symbol,SignalId,Book,Dir,Entry,SL,TP,TP2,SL_pips,TP_pips,VolDelta,TickDelta,VolShare,TickShare,BuyLevels,SellLevels,CrowdReason,Atr,DayAtr,RangeId,RangeDist_pips,Session,Taken,SkipReason,Source,Version";
 
         public LraTrader(object ctx) : base(ctx)
@@ -144,6 +145,25 @@ namespace PowerLanguage.Strategy
             FillProfile(b);
             _h.Add(b);
 
+            // ---- Сопровождение позиций (ТЗ §7, §8) ----
+            double atr = this.AverageTrueRange(AtrPeriod);
+            foreach (string book in new List<string>(_pos.Keys))
+            {
+                LraPosition p = _pos[book];
+                foreach (LraExit x in LraPos.OnBar(_h, p, atr, _s))
+                {
+                    LraUnit u = x.Unit;
+                    double move = p.Dir * (x.Price - u.Entry);
+                    double usd = move * Bars.Info.BigPointValue - CommissionUsd;
+                    _csv.Write("trades.csv", TradesHeader, t, string.Format(CI,
+                        "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4},{5},{6},{7:yyyy-MM-dd HH:mm},{8},{9},{10},{11},{12},{13},{14},{15},{16},{17}",
+                        t, paris, _sym, p.SignalId, p.Book, u.N, p.Dir, u.OpenTime, F(u.Entry), F(p.SL), F(u.TP),
+                        F(x.Price), x.Reason, F(move / PipSize), F(usd), x.Ambiguous ? 1 : 0,
+                        Environment.IsRealTimeCalc ? "LIVE" : "HIST", Version));
+                }
+                if (p.Units.Count == 0) _pos.Remove(book);
+            }
+
             // ---- Диапазоны ЛРА (ТЗ §4, §8) ----
             var changed = new List<LraRange>();
             LraRange born = LraRanges.Update(_h, _ranges, _s, changed);
@@ -154,7 +174,6 @@ namespace PowerLanguage.Strategy
                     F(r.High), F(r.Low), F(r.Poc), F(r.Volume), r.Bars, r.ExitDir));
 
             // ---- Сигналы (ТЗ §6, §8) ----
-            double atr = this.AverageTrueRange(AtrPeriod);
             double dayAtr = LraLevels.DayAtr(_h, _s);
             bool weekend = paris.DayOfWeek == DayOfWeek.Saturday || paris.DayOfWeek == DayOfWeek.Sunday;
             bool news = InNews(paris);
@@ -176,7 +195,7 @@ namespace PowerLanguage.Strategy
                     F(atr), F(dayAtr), sg.Range == null ? "" : sg.Range.Id, F(sg.RangeDistPips),
                     b.Session, sg.Skip == "" ? 1 : 0, sg.Skip, Environment.IsRealTimeCalc ? "LIVE" : "HIST", Version));
 
-                // Вход — тикет 10
+                if (sg.Skip == "") _pos[sg.Book] = LraPos.Open(sg, _h, id);
             }
         }
 
