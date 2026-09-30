@@ -64,7 +64,23 @@ namespace PowerLanguage.Strategy
                 }
             }
 
-            // B — тикет 07
+            // B — добор и ADVERSE_FLOW (только AGAINST, на этом баре выходов не было)
+            if (p.Book == "AGAINST" && exits.Count == 0)
+            {
+                LraUnit u1 = p.Units.Find(u => u.N == 1) ?? p.Units[0];
+                double adverse = up ? u1.Entry - b.Close : b.Close - u1.Entry; // >0 — цена ушла против нас
+                LraImbalance after = LraImb.Measure(h, p.EntryIdx + 1, last, s);
+                if (adverse > 0 && after.Dir == p.Dir)
+                {
+                    foreach (LraUnit u in p.Units) exits.Add(new LraExit { Unit = u, Price = b.Close, Reason = "ADVERSE_FLOW" });
+                    p.Units.Clear();
+                }
+                else if (p.Units.Count == 1 && p.Units[0].N == 1 && adverse / s.PipSize >= s.AddStepPips - 1e-9 && after.Dir != p.Dir)
+                {
+                    if (s.AddTargetMode == "ENTRY1") u1.TP = u1.Entry;
+                    p.Units.Add(new LraUnit { N = 2, OpenIdx = last, OpenTime = b.Time, Entry = b.Close, TP = u1.TP });
+                }
+            }
             return exits;
         }
     }
