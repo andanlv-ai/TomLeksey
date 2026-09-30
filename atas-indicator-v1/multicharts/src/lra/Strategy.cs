@@ -43,6 +43,12 @@ namespace PowerLanguage.Strategy
         private LraCsv _csv;
         private TimeZoneInfo _chartTz, _paris;
         private string _sym;
+        private List<TimeSpan[]> _news;
+        private readonly List<LraRange> _ranges = new List<LraRange>();
+        private readonly Dictionary<string, LraPosition> _pos = new Dictionary<string, LraPosition>();  // книга -> позиция (наполняет тикет 10)
+
+        private const string RangesHeader = "Time,ParisTime,Symbol,RangeId,Event,Start,End,High,Low,Poc,Volume,Bars,ExitDir";
+        private const string SignalsHeader = "Time,ParisTime,Symbol,SignalId,Book,Dir,Entry,SL,TP,TP2,SL_pips,TP_pips,VolDelta,TickDelta,VolShare,TickShare,BuyLevels,SellLevels,CrowdReason,Atr,DayAtr,RangeId,RangeDist_pips,Session,Taken,SkipReason,Source,Version";
 
         public LraTrader(object ctx) : base(ctx)
         {
@@ -97,6 +103,16 @@ namespace PowerLanguage.Strategy
                 default:                       _chartTz = TimeZoneInfo.Local; break;
             }
 
+            _news = new List<TimeSpan[]>();
+            foreach (string w in (NewsWindows ?? "").Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] p = w.Split('-');
+                if (p.Length == 2)
+                    _news.Add(new[] { TimeSpan.Parse(p[0].Trim(), CI), TimeSpan.Parse(p[1].Trim(), CI) });
+            }
+            _ranges.Clear();
+            _pos.Clear();
+
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
                 string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26}",
@@ -128,7 +144,49 @@ namespace PowerLanguage.Strategy
             FillProfile(b);
             _h.Add(b);
 
-            // Логика — тикеты 09, 10
+            // ---- Диапазоны ЛРА (ТЗ §4, §8) ----
+            var changed = new List<LraRange>();
+            LraRange born = LraRanges.Update(_h, _ranges, _s, changed);
+            foreach (LraRange r in changed)
+                _csv.Write("ranges_" + _sym + ".csv", RangesHeader, t, string.Format(CI,
+                    "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4},{5:yyyy-MM-dd HH:mm},{6:yyyy-MM-dd HH:mm},{7},{8},{9},{10},{11},{12}",
+                    t, paris, _sym, r.Id, r == born ? "NEW" : r.Done ? "DONE" : "EXPIRED", r.Start, r.End,
+                    F(r.High), F(r.Low), F(r.Poc), F(r.Volume), r.Bars, r.ExitDir));
+
+            // ---- Сигналы (ТЗ §6, §8) ----
+            double atr = this.AverageTrueRange(AtrPeriod);
+            double dayAtr = LraLevels.DayAtr(_h, _s);
+            bool weekend = paris.DayOfWeek == DayOfWeek.Saturday || paris.DayOfWeek == DayOfWeek.Sunday;
+            bool news = InNews(paris);
+            foreach (LraSignal sg in LraScen.Evaluate(_h, atr, dayAtr, _ranges, _s))
+            {
+                if (sg.Skip == "")
+                {
+                    if (weekend) sg.Skip = "WEEKEND";
+                    else if (news) sg.Skip = "NEWS";
+                    else if (_pos.ContainsKey(sg.Book)) sg.Skip = "IN_POSITION";
+                }
+                string id = string.Format(CI, "{0}_{1:yyyyMMddHHmm}_{2}", _sym, t, sg.Book);
+                LraImbalance c = sg.Crowd;
+                _csv.Write("signals_" + _sym + ".csv", SignalsHeader, t, string.Format(CI,
+                    "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16},{17},{18},{19},{20},{21},{22},{23},{24},{25},{26},{27}",
+                    t, paris, _sym, id, sg.Book, sg.Dir, F(sg.Entry), F(sg.SL), F(sg.TP), F(sg.TP2),
+                    F(Math.Abs(sg.Entry - sg.SL) / PipSize), F(Math.Abs(sg.TP - sg.Entry) / PipSize),
+                    F(c.VolDelta), F(c.TickDelta), F(c.VolShare), F(c.TickShare), c.BuyLevels, c.SellLevels, c.Reason,
+                    F(atr), F(dayAtr), sg.Range == null ? "" : sg.Range.Id, F(sg.RangeDistPips),
+                    b.Session, sg.Skip == "" ? 1 : 0, sg.Skip, Environment.IsRealTimeCalc ? "LIVE" : "HIST", Version));
+
+                // Вход — тикет 10
+            }
+        }
+
+        private static string F(double v) { return double.IsNaN(v) ? "" : v.ToString("0.######", CI); }
+
+        private bool InNews(DateTime paris)
+        {
+            foreach (TimeSpan[] w in _news)
+                if (paris.TimeOfDay >= w[0] && paris.TimeOfDay <= w[1]) return true;
+            return false;
         }
 
         // Профиль бара: уровни и суммарные Ask/Bid. Нет профиля — NoData = true (как zero в DDAutoTrader.GetDelta).
