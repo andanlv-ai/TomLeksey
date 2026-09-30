@@ -65,7 +65,8 @@ DDAutoTrader и DivergenceDetector — не образец логики. Из н
 
 **A — «против толпы» (книга `AGAINST`, P§3.A).**
 - Условия: толпа `Dir≠0` (§3) и цена «стоит или идёт против»:
-  `(Close[0] − Close[ImbBars]) × Dir ≤ StallAtr × ATR`.
+  `(Close[0] − Close[ImbBars]) × Dir ≤ StallAtr × ATR`, но движение не сильное:
+  `|Close[0] − Close[ImbBars]| < StrongAtr × ATR` (сильное — это уже D; A и D не срабатывают вместе).
 - Вход против толпы, `dir = −Dir`, по Close.
 - `SL` — ближайший уровень против сделки + отступ.
 - `TP` — ближайший уровень по ходу сделки + отступ. Если `TP` дальше `MaxTakePips`,
