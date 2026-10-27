@@ -1,6 +1,7 @@
 # LraTrader — как устроен и как запустить
 
 Состояние на 2026-10-27. Исходное ТЗ — [tz.md](tz.md); где они расходятся, верно это описание.
+Текущая работа — дисбалансы толпы по ценам на тиковых данных: [tz-ticks.md](tz-ticks.md).
 Правила автора — [../DivergenceDetector/PATTERNS.md](../DivergenceDetector/PATTERNS.md), ссылки `В2 21:01` = видео 2, минута 21:01.
 
 LraTrader — стратегия MultiCharts .NET для часового графика валютных фьючерсов CME. Реальных ордеров нет:
@@ -122,9 +123,10 @@ MultiCharts сам перекомпилирует его и пересчитае
 Файл только дописывается барами новее последней строки, чтобы не потерять бары старше месяца истории CQG.
 
 **TickRecorder** — `src/TickRecorder.Indicator.MC.CS` → `Techniques\CS\TickRecorder.Indicator.CS`. Ставится на график
-`1 Tick` (профиль на нём не нужен) и пишет каждую сделку в `<Dir>\<символ>_TICK.csv`:
-`Time,Price,Volume,UpTicks,DownTicks,Source`. Размер сделки = `UpTicks + DownTicks` (одно из них 0, это направление);
-`Volume` у MultiCharts здесь равен только `UpTicks`, его не использовать. Файл перезаписывается при каждом пересчёте.
+`1 Tick` (профиль на нём не нужен) и пишет каждую сделку в `<Dir>\<символ>_<Label>.csv` (по умолчанию `_TRADES`):
+`Time,Price,Size,Dir,Source`. `Size` = `UpTicks + DownTicks` (контракты), `Dir` = 1 вверх / −1 вниз;
+`Bars.Volume` у MultiCharts на таком графике равен только `UpTicks`, его не использовать.
+Файл только дописывается сделками новее последней строки, как у BarRecorder.
 
 ## 7. Прогон без MultiCharts
 
