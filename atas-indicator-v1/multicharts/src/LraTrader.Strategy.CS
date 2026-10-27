@@ -555,7 +555,8 @@ namespace PowerLanguage.Strategy
         private List<TimeSpan[]> _news;
         private readonly List<LraRange> _ranges = new List<LraRange>();
         private readonly Dictionary<string, LraPosition> _pos = new Dictionary<string, LraPosition>();  // книга -> позиция (ТЗ §7)
-        private bool _vpHooked, _vpWaiting;
+        private bool _vpWaiting;
+        private int _vpPolls;
 
         private const string RangesHeader = "Time,ParisTime,Symbol,RangeId,Event,Start,End,High,Low,Poc,Volume,Bars,ExitDir";
         private const string TradesHeader = "CloseTime,ParisTime,Symbol,SignalId,Book,Unit,Dir,OpenTime,OpenPrice,SL,TP,ClosePrice,Exit,Pips,Usd,Ambiguous,Source,Version";
@@ -624,17 +625,6 @@ namespace PowerLanguage.Strategy
             _ranges.Clear();
             _pos.Clear();
 
-            // MC строит профиль объёма после расчёта истории: пока профилей нет — бары пропускаем,
-            // иначе CSV запишутся с пустой дельтой и водяная метка не даст их переписать.
-            // Профиль появился — один пересчёт.
-            _vpWaiting = false;
-            var vpc = this.VolumeProfile;
-            if (vpc != null && !_vpHooked)
-            {
-                _vpHooked = true;
-                vpc.EChanged += full => { if (_vpWaiting) { _vpWaiting = false; ExecControl.Recalculate(); } };
-            }
-
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
                 string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26}",
@@ -653,11 +643,8 @@ namespace PowerLanguage.Strategy
 
         protected override void CalcBar()
         {
+            if (!VpReady()) return;
             if (Bars.Status != EBarState.Close) return;
-            var vp = this.VolumeProfile;
-            var svc = vp as IProfilesCollectionService;
-            if (svc != null) svc.Syncronize();
-            if (vp == null || vp.Items == null || vp.Items.Count == 0) { _vpWaiting = true; return; }
 
             DateTime t = Bars.Time[0], paris = ToParis(t);
             var b = new LraBar
@@ -722,6 +709,37 @@ namespace PowerLanguage.Strategy
 
                 if (sg.Skip == "") _pos[sg.Book] = LraPos.Open(sg, _h, id);
             }
+        }
+
+        // MC строит профиль объёма позже расчёта истории, сигнала о готовности (EChanged) не шлёт.
+        // Пока профилей нет — бары пропускаем (иначе CSV запишутся с пустой дельтой и водяная метка
+        // не даст их переписать) и опрашиваем последний бар; профиль появился — полный пересчёт.
+        // ponytail: опрос раз в 2 с, не больше 60 раз; дальше — ручной Status Off/On
+        private bool VpReady()
+        {
+            var vp = this.VolumeProfile;
+            var svc = vp as IProfilesCollectionService;
+            if (svc != null) svc.Syncronize();
+            bool ready = vp != null && vp.Items != null && vp.Items.Count > 0;
+            if (!ready)
+            {
+                _vpWaiting = true;
+                if (Bars.LastBarOnChart && _vpPolls < 60)
+                {
+                    if (_vpPolls % 10 == 0) RunEvent("VP_WAIT poll=" + _vpPolls);
+                    _vpPolls++;
+                    ExecControl.RecalcLastBarAfter(TimeSpan.FromSeconds(2));
+                }
+                return false;
+            }
+            if (_vpWaiting) { _vpWaiting = false; _vpPolls = 0; RunEvent("VP_READY"); ExecControl.Recalculate(); return false; }
+            return true;
+        }
+
+        private void RunEvent(string ev)
+        {
+            _csv.Write("runs.csv", null, DateTime.MaxValue,
+                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},{1},{2},{3},", DateTime.Now, ev, _sym, Version));
         }
 
         private static string F(double v) { return double.IsNaN(v) ? "" : v.ToString("0.######", CI); }

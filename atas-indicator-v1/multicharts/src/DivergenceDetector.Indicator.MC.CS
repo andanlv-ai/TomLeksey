@@ -50,8 +50,8 @@ namespace PowerLanguage.Indicator
         private decimal       _prevVolume;
         private int           _lastAlertBar;
         private bool          _prevEmailEnabled;
-        private bool          _vpHooked;
-        private int           _vpRecalcs;
+        private bool          _vpWaiting;
+        private int           _vpPolls;
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
@@ -93,19 +93,6 @@ namespace PowerLanguage.Indicator
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
             Diag("    Params: NBars={0} StreakBars={1} AtrPeriod={2} MaxRangeATR={3} UseNRFilter={4}",
                 NBars, StreakBars, AtrPeriod, MaxRangeATR, UseNRFilter);
-
-            // профиль объёма MC строит позже расчёта истории — пересчитать, когда он готов
-            // ponytail: не больше 3 пересчётов за сессию, чтобы не зациклиться
-            var vpc = this.VolumeProfile;
-            if (vpc != null && !_vpHooked)
-            {
-                _vpHooked = true;
-                vpc.EChanged += full =>
-                {
-                    Diag("VP EChanged full={0} recalcs={1}", full, _vpRecalcs);
-                    if (_vpRecalcs < 3) { _vpRecalcs++; ExecControl.Recalculate(); }
-                };
-            }
 
             if (EmailEnabled && !_prevEmailEnabled)
                 SendAlertEmail("TEST_EMAIL_OK", 0, 0, 0);
@@ -149,9 +136,11 @@ namespace PowerLanguage.Indicator
                 }
                 catch (Exception ex) { Diag("DIAG ex: {0}", ex.Message); }
 
-                Diag("DIAG BAR#{0} absBar={1} items={2} pEmpty={3} ask={4} bid={5}",
-                    Bars.CurrentBar, absBar, itemsCount, pEmpty, askD, bidD);
+                Diag("DIAG BAR#{0} absBar={1} items={2} pEmpty={3} ask={4} bid={5} vol={6} up={7} down={8}",
+                    Bars.CurrentBar, absBar, itemsCount, pEmpty, askD, bidD, Bars.Volume[0], Bars.UpTicks[0], Bars.DownTicks[0]);
             }
+
+            if (!VpReady()) return;
 
             // Обновляем историю дельт (только barsAgo=0 — надёжно работает)
             decimal curVolume = 0;
@@ -213,6 +202,31 @@ namespace PowerLanguage.Indicator
                 Output.WriteLine("BAR#{0} price={1} delta={2} sig={3} streak={4} narrow={5} rangeATR={6:F3} rawDelta={7} vol={8}",
                     Bars.CurrentBar, priceDir, deltaDir, signal, streakDir, narrow, rangeRatio, curDelta, curVolume);
             }
+        }
+
+        // MC строит профиль объёма позже расчёта истории, сигнала о готовности (EChanged) не шлёт.
+        // Пока профилей нет — бары пропускаем и опрашиваем последний бар; появились — полный пересчёт.
+        // ponytail: опрос раз в 2 с, не больше 60 раз; дальше — ручной Status Off/On
+        private bool VpReady()
+        {
+            var vp = this.VolumeProfile;
+            var svc = vp as IProfilesCollectionService;
+            if (svc != null) svc.Syncronize();
+            bool ready = vp != null && vp.Items != null && vp.Items.Count > 0;
+            if (!ready)
+            {
+                _vpWaiting = true;
+                if (Bars.LastBarOnChart && _vpPolls < 60) { _vpPolls++; ExecControl.RecalcLastBarAfter(TimeSpan.FromSeconds(2)); }
+                return false;
+            }
+            if (_vpWaiting)
+            {
+                _vpWaiting = false; _vpPolls = 0;
+                Diag("VP ready — Recalculate");
+                ExecControl.Recalculate();
+                return false;
+            }
+            return true;
         }
 
         // диагностика: в Output и в файл на диске
