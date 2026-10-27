@@ -48,7 +48,8 @@ namespace PowerLanguage.Strategy
         private List<TimeSpan[]> _news;
         private readonly List<LraRange> _ranges = new List<LraRange>();
         private readonly Dictionary<string, LraPosition> _pos = new Dictionary<string, LraPosition>();  // книга -> позиция (ТЗ §7)
-        private readonly Dictionary<LraUnit, ITrendLineObject[]> _unitLines = new Dictionary<LraUnit, ITrendLineObject[]>(); // вход, тейк
+        private class UnitMarks { public ITrendLineObject Entry, Tp; public ITextObject TpLabel; }
+        private readonly Dictionary<LraUnit, UnitMarks> _unitLines = new Dictionary<LraUnit, UnitMarks>();
         private readonly Dictionary<LraPosition, ITrendLineObject> _slLines = new Dictionary<LraPosition, ITrendLineObject>();
         private bool _vpWaiting;
         private int _vpPolls;
@@ -218,27 +219,37 @@ namespace PowerLanguage.Strategy
         }
 
         // ---- Сделки на графике: линии входа (серая), стопа (красная), тейка (зелёная) тянутся, пока часть открыта;
-        // на выходе — пунктир от входа к цене выхода и подпись «причина ±пункты» (зелёная — плюс, красная — минус).
+        // у начала линий подписи SL, TP1, TP2; на выходе — пунктир от входа к цене выхода и подпись «причина ±пункты»
+        // (зелёная — плюс, красная — минус, серая — ноль).
         private void DrawOpen(DateTime t)
         {
             foreach (LraPosition p in _pos.Values)
             {
                 ITrendLineObject sl;
                 if (!_slLines.TryGetValue(p, out sl))
-                    _slLines[p] = Line(new ChartPoint(_h[p.EntryIdx].Time, p.SL), new ChartPoint(t, p.SL), Color.Red, ETLStyle.ToolSolid);
+                {
+                    var a = new ChartPoint(_h[p.EntryIdx].Time, p.SL);
+                    _slLines[p] = Line(a, new ChartPoint(t, p.SL), Color.Red, ETLStyle.ToolSolid);
+                    Label(a, "SL", Color.Red);
+                }
                 else sl.End = new ChartPoint(t, p.SL);
                 foreach (LraUnit u in p.Units)
                 {
-                    ITrendLineObject[] l;
-                    if (!_unitLines.TryGetValue(u, out l))
-                        _unitLines[u] = new[] {
-                            Line(new ChartPoint(u.OpenTime, u.Entry), new ChartPoint(t, u.Entry), Color.DimGray, ETLStyle.ToolSolid),
-                            Line(new ChartPoint(u.OpenTime, u.TP), new ChartPoint(t, u.TP), Color.Green, ETLStyle.ToolSolid) };
+                    UnitMarks m;
+                    var tpAt = new ChartPoint(u.OpenTime, u.TP);
+                    if (!_unitLines.TryGetValue(u, out m))
+                        _unitLines[u] = new UnitMarks
+                        {
+                            Entry = Line(new ChartPoint(u.OpenTime, u.Entry), new ChartPoint(t, u.Entry), Color.DimGray, ETLStyle.ToolSolid),
+                            Tp = Line(tpAt, new ChartPoint(t, u.TP), Color.Green, ETLStyle.ToolSolid),
+                            TpLabel = Label(tpAt, "TP" + u.N, Color.Green)
+                        };
                     else
                     {
-                        l[0].End = new ChartPoint(t, u.Entry);
-                        l[1].Begin = new ChartPoint(u.OpenTime, u.TP);   // TP части 1 меняется при доборе ENTRY1
-                        l[1].End = new ChartPoint(t, u.TP);
+                        m.Entry.End = new ChartPoint(t, u.Entry);
+                        m.Tp.Begin = tpAt;   // TP части 1 меняется при доборе ENTRY1
+                        m.Tp.End = new ChartPoint(t, u.TP);
+                        m.TpLabel.Location = tpAt;
                     }
                 }
             }
@@ -247,17 +258,26 @@ namespace PowerLanguage.Strategy
         private void DrawExit(LraPosition p, LraExit x, DateTime t)
         {
             LraUnit u = x.Unit;
-            ITrendLineObject[] l;
-            if (_unitLines.TryGetValue(u, out l)) { l[0].End = new ChartPoint(t, u.Entry); l[1].End = new ChartPoint(t, u.TP); _unitLines.Remove(u); }
+            UnitMarks m;
+            if (_unitLines.TryGetValue(u, out m)) { m.Entry.End = new ChartPoint(t, u.Entry); m.Tp.End = new ChartPoint(t, u.TP); _unitLines.Remove(u); }
             ITrendLineObject sl;
             if (_slLines.TryGetValue(p, out sl)) sl.End = new ChartPoint(t, p.SL);
-            double pips = p.Dir * (x.Price - u.Entry) / PipSize;
-            Color c = pips >= 0 ? Color.Green : Color.Red;
+            double pips = Math.Round(p.Dir * (x.Price - u.Entry) / PipSize, 1);
+            Color c = pips > 0 ? Color.Green : pips < 0 ? Color.Red : Color.Gray;
             Line(new ChartPoint(u.OpenTime, u.Entry), new ChartPoint(t, x.Price), c, ETLStyle.ToolDotted);
             ITextObject tx = DrwText.Create(new ChartPoint(t, x.Price), string.Format(CI, " {0} {1:+0;-0;0} п.", x.Reason, pips));
             tx.Color = c;
             tx.HStyle = ETextStyleH.Right;
             tx.VStyle = ETextStyleV.Center;
+        }
+
+        private ITextObject Label(ChartPoint at, string text, Color c)
+        {
+            ITextObject tx = DrwText.Create(at, text);
+            tx.Color = c;
+            tx.HStyle = ETextStyleH.Right;
+            tx.VStyle = ETextStyleV.Above;
+            return tx;
         }
 
         private ITrendLineObject Line(ChartPoint a, ChartPoint b, Color c, ETLStyle st)
