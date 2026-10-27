@@ -2,6 +2,7 @@
 using PowerLanguage.Function;
 using PowerLanguage.VolumeProfile;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -567,6 +568,8 @@ namespace PowerLanguage.Strategy
         private List<TimeSpan[]> _news;
         private readonly List<LraRange> _ranges = new List<LraRange>();
         private readonly Dictionary<string, LraPosition> _pos = new Dictionary<string, LraPosition>();  // книга -> позиция (ТЗ §7)
+        private readonly Dictionary<LraUnit, ITrendLineObject[]> _unitLines = new Dictionary<LraUnit, ITrendLineObject[]>(); // вход, тейк
+        private readonly Dictionary<LraPosition, ITrendLineObject> _slLines = new Dictionary<LraPosition, ITrendLineObject>();
         private bool _vpWaiting;
         private int _vpPolls;
 
@@ -637,6 +640,8 @@ namespace PowerLanguage.Strategy
             }
             _ranges.Clear();
             _pos.Clear();
+            _unitLines.Clear();
+            _slLines.Clear();
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
@@ -685,8 +690,9 @@ namespace PowerLanguage.Strategy
                         t, paris, _sym, p.SignalId, p.Book, u.N, p.Dir, u.OpenTime, F(u.Entry), F(p.SL), F(u.TP),
                         F(x.Price), x.Reason, F(move / PipSize), F(usd), x.Ambiguous ? 1 : 0,
                         Environment.IsRealTimeCalc ? "LIVE" : "HIST", Version));
+                    DrawExit(p, x, t);
                 }
-                if (p.Units.Count == 0) _pos.Remove(book);
+                if (p.Units.Count == 0) { _pos.Remove(book); _slLines.Remove(p); }
             }
 
             // ---- Диапазоны ЛРА (ТЗ §4, §8) ----
@@ -720,8 +726,65 @@ namespace PowerLanguage.Strategy
                     F(atr), F(dayAtr), sg.Range == null ? "" : sg.Range.Id, F(sg.RangeDistPips),
                     b.Session, sg.Skip == "" ? 1 : 0, sg.Skip, Environment.IsRealTimeCalc ? "LIVE" : "HIST", Version));
 
-                if (sg.Skip == "") _pos[sg.Book] = LraPos.Open(sg, _h, id);
+                if (sg.Skip == "")
+                {
+                    _pos[sg.Book] = LraPos.Open(sg, _h, id);
+                    IArrowObject ar = DrwArrow.Create(new ChartPoint(t, sg.Entry), sg.Dir < 0);
+                    ar.Color = sg.Dir > 0 ? Color.Blue : Color.Magenta;
+                    ar.Text = sg.Book == "AGAINST" ? "A" : "D";
+                }
             }
+            DrawOpen(t);
+        }
+
+        // ---- Сделки на графике: линии входа (серая), стопа (красная), тейка (зелёная) тянутся, пока часть открыта;
+        // на выходе — пунктир от входа к цене выхода и подпись «причина ±пункты» (зелёная — плюс, красная — минус).
+        private void DrawOpen(DateTime t)
+        {
+            foreach (LraPosition p in _pos.Values)
+            {
+                ITrendLineObject sl;
+                if (!_slLines.TryGetValue(p, out sl))
+                    _slLines[p] = Line(new ChartPoint(_h[p.EntryIdx].Time, p.SL), new ChartPoint(t, p.SL), Color.Red, ETLStyle.ToolSolid);
+                else sl.End = new ChartPoint(t, p.SL);
+                foreach (LraUnit u in p.Units)
+                {
+                    ITrendLineObject[] l;
+                    if (!_unitLines.TryGetValue(u, out l))
+                        _unitLines[u] = new[] {
+                            Line(new ChartPoint(u.OpenTime, u.Entry), new ChartPoint(t, u.Entry), Color.DimGray, ETLStyle.ToolSolid),
+                            Line(new ChartPoint(u.OpenTime, u.TP), new ChartPoint(t, u.TP), Color.Green, ETLStyle.ToolSolid) };
+                    else
+                    {
+                        l[0].End = new ChartPoint(t, u.Entry);
+                        l[1].Begin = new ChartPoint(u.OpenTime, u.TP);   // TP части 1 меняется при доборе ENTRY1
+                        l[1].End = new ChartPoint(t, u.TP);
+                    }
+                }
+            }
+        }
+
+        private void DrawExit(LraPosition p, LraExit x, DateTime t)
+        {
+            LraUnit u = x.Unit;
+            ITrendLineObject[] l;
+            if (_unitLines.TryGetValue(u, out l)) { l[0].End = new ChartPoint(t, u.Entry); l[1].End = new ChartPoint(t, u.TP); _unitLines.Remove(u); }
+            ITrendLineObject sl;
+            if (_slLines.TryGetValue(p, out sl)) sl.End = new ChartPoint(t, p.SL);
+            double pips = p.Dir * (x.Price - u.Entry) / PipSize;
+            Color c = pips >= 0 ? Color.Green : Color.Red;
+            Line(new ChartPoint(u.OpenTime, u.Entry), new ChartPoint(t, x.Price), c, ETLStyle.ToolDotted);
+            ITextObject tx = DrwText.Create(new ChartPoint(t, x.Price), string.Format(CI, " {0} {1:+0;-0;0} п.", x.Reason, pips));
+            tx.Color = c;
+            tx.HStyle = ETextStyleH.Right;
+            tx.VStyle = ETextStyleV.Center;
+        }
+
+        private ITrendLineObject Line(ChartPoint a, ChartPoint b, Color c, ETLStyle st)
+        {
+            ITrendLineObject l = DrwTrendLine.Create(a, b);
+            l.Color = c; l.Style = st; l.Size = 1;
+            return l;
         }
 
         // MC строит профиль объёма позже расчёта истории, сигнала о готовности (EChanged) не шлёт.
