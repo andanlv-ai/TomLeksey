@@ -83,6 +83,7 @@ namespace PowerLanguage.Strategy
                 foreach (LraSignal sg in Eval(h, atr, dayAtr, ranges, s))
                 {
                     if (sg.Skip == "" && Math.Abs(sg.TP - sg.Entry) / s.PipSize < MinTp - 1e-9) sg.Skip = "SMALL_TP";
+                    if (sg.Skip == "" && Math.Abs(sg.SL - sg.Entry) / s.PipSize < MinSl - 1e-9) sg.Skip = "SMALL_SL";
                     if (sg.Skip == "" && MaxRR > 0 && Math.Abs(sg.SL - sg.Entry) > MaxRR * Math.Abs(sg.TP - sg.Entry) + 1e-9) sg.Skip = "RR";
                     if (sg.Skip == "") { if (weekend) sg.Skip = "WEEKEND"; else if (news) sg.Skip = "NEWS"; else if (pos.ContainsKey(sg.Book)) sg.Skip = "IN_POSITION"; }
                     r.Sig++;
@@ -104,7 +105,7 @@ namespace PowerLanguage.Strategy
             return r;
         }
 
-        public static double MaxRR = 0, MinTp = 0;
+        public static double MaxRR = 0, MinTp = 0, MinSl = 0;
         public static DateTime CountFrom = DateTime.MinValue, CountTo = DateTime.MaxValue;
         static LraSettings Def() { return new LraSettings { Tick = Tick }; }
 
@@ -114,28 +115,32 @@ namespace PowerLanguage.Strategy
                 name, r.Sig, r.Taken, r.Trades, r.Win, r.Loss, r.Pips, r.Trades > 0 ? r.Pips / r.Trades : 0, r.MaxDd, r.QW, r.QL);
         }
 
-        // Стоп и тейк по фракталам: ширина фрактала × предел стопа × предел тейка × тейк не меньше × стоп не больше тейка.
+        // Стоп и тейк по фракталам: ширина фрактала × глубина поиска × пределы стопа/тейка × пропуск сделок
+        // с тейком (тмин) или стопом (смин) короче заданного.
         static void FracGrid(List<LraBar> bars)
         {
             var rows = new List<Tuple<string, Result>>();
-            foreach (int fb in new[] { 1, 2, 3 })
-            foreach (double st in new[] { 15.0, 20.0, 30.0, 40.0 })
-            foreach (double tp in new[] { 10.0, 15.0, 20.0, 30.0 })
-            foreach (double minTp in new[] { 0.0, 5.0, 10.0 })
-            foreach (double rr in new[] { 0.0, 1.0 })
+            foreach (int fb in new[] { 1, 2, 3, 4, 5, 6 })
+            foreach (int look in new[] { 24, 48, 96 })
+            foreach (var lim in new[] { Tuple.Create(30.0, 15.0), Tuple.Create(40.0, 30.0) })
+            foreach (double minTp in new[] { 0.0, 5.0, 8.0, 10.0 })
+            foreach (double minSl in new[] { 0.0, 5.0, 8.0, 10.0 })
             {
-                var s = Def(); s.FractalBars = fb; s.MaxStopPips = st; s.MaxTakePips = tp; MinTp = minTp; MaxRR = rr;
-                rows.Add(Tuple.Create(string.Format(CI, "фр{0} стоп{1} тейк{2} мин{3} rr{4}", fb, st, tp, minTp, rr), Run(bars, s)));
+                var s = Def(); s.FractalBars = fb; s.SwingLookback = look; s.MaxStopPips = lim.Item1; s.MaxTakePips = lim.Item2;
+                MinTp = minTp; MinSl = minSl;
+                rows.Add(Tuple.Create(string.Format(CI, "фр{0} глуб{1} лимит{2}/{3} тмин{4} смин{5}", fb, look, lim.Item1, lim.Item2, minTp, minSl), Run(bars, s)));
             }
-            MinTp = 0; MaxRR = 0;
+            MinTp = 0; MinSl = 0;
             Console.WriteLine("\n--- среднее по вариантам для каждого значения ---");
-            foreach (string key in new[] { "фр", "стоп", "тейк", "мин", "rr" })
+            foreach (string key in new[] { "фр", "глуб", "лимит", "тмин", "смин" })
                 foreach (var g in rows.GroupBy(r => r.Item1.Split(' ').First(x => x.StartsWith(key))))
                     Console.WriteLine("{0,-10} сделок {1,5:0.0}  итог {2,6:0} п.  на сделку {3,5:0.0}  просадка {4,4:0}", g.Key,
                         g.Average(r => r.Item2.Trades), g.Average(r => r.Item2.Pips),
                         g.Average(r => r.Item2.Trades > 0 ? r.Item2.Pips / r.Item2.Trades : 0), g.Average(r => r.Item2.MaxDd));
-            Console.WriteLine("\n--- 15 лучших (сделок >= 6) ---");
-            foreach (var r in rows.Where(r => r.Item2.Trades >= 6).OrderByDescending(r => r.Item2.Pips).Take(15)) Print(r.Item1, r.Item2);
+            Console.WriteLine("\n--- 20 лучших (сделок >= 6) ---");
+            foreach (var r in rows.Where(r => r.Item2.Trades >= 6).OrderByDescending(r => r.Item2.Pips).Take(20)) Print(r.Item1, r.Item2);
+            Console.WriteLine("\n--- все варианты ---");
+            foreach (var r in rows) Print(r.Item1, r.Item2);
         }
 
         public static void Main(string[] args)
