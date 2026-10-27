@@ -122,7 +122,7 @@ MultiCharts сам перекомпилирует его и пересчитае
 
 ## 7. Прогон без MultiCharts
 
-`bash .scratch/lra-sweep/run.sh` (из корня репозитория) — ядро советника по файлам записывателя
+`bash src/lra/sweep/run.sh` (из `atas-indicator-v1/multicharts`) — ядро советника по файлам записывателя
 `D:\TradeLog\Bars\BP6Z26_TICKS.csv` и `BP6Z26_UPDN.csv`, перебор порогов по одному.
 `... run.sh 'D:\TradeLog\Bars' only` — только настройки по умолчанию; `... cum` — перебор режима CUM.
 С настройками по умолчанию даёт то же, что MultiCharts, с разницей в 1–2 сделки (иначе считается часовой ATR).
