@@ -50,6 +50,8 @@ namespace PowerLanguage.Indicator
         private decimal       _prevVolume;
         private int           _lastAlertBar;
         private bool          _prevEmailEnabled;
+        private bool          _vpHooked;
+        private int           _vpRecalcs;
 
         public DivergenceDetector(object ctx) : base(ctx)
         {
@@ -87,10 +89,23 @@ namespace PowerLanguage.Indicator
             _deltaHistory = new List<decimal>();
             _prevVolume   = 0;
             _lastAlertBar = -1;
-            Output.WriteLine("=== DivergenceDetector v4.6 START [{0}] {1} ===",
+            Diag("=== DivergenceDetector v4.6 START [{0}] {1} ===",
                 DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Bars.Info.Name);
-            Output.WriteLine("    Params: NBars={0} StreakBars={1} AtrPeriod={2} MaxRangeATR={3} UseNRFilter={4}",
+            Diag("    Params: NBars={0} StreakBars={1} AtrPeriod={2} MaxRangeATR={3} UseNRFilter={4}",
                 NBars, StreakBars, AtrPeriod, MaxRangeATR, UseNRFilter);
+
+            // профиль объёма MC строит позже расчёта истории — пересчитать, когда он готов
+            // ponytail: не больше 3 пересчётов за сессию, чтобы не зациклиться
+            var vpc = this.VolumeProfile;
+            if (vpc != null && !_vpHooked)
+            {
+                _vpHooked = true;
+                vpc.EChanged += full =>
+                {
+                    Diag("VP EChanged full={0} recalcs={1}", full, _vpRecalcs);
+                    if (_vpRecalcs < 3) { _vpRecalcs++; ExecControl.Recalculate(); }
+                };
+            }
 
             if (EmailEnabled && !_prevEmailEnabled)
                 SendAlertEmail("TEST_EMAIL_OK", 0, 0, 0);
@@ -102,7 +117,7 @@ namespace PowerLanguage.Indicator
             int absBar = Bars.FullSymbolData.Current;
 
             // диагностика первых 5 баров
-            if (Bars.CurrentBar <= 5)
+            if (Bars.CurrentBar <= 5 || Bars.LastBarOnChart)
             {
                 var vpDiag = this.VolumeProfile;
                 int itemsCount = -1;
@@ -132,9 +147,9 @@ namespace PowerLanguage.Indicator
                         }
                     }
                 }
-                catch (Exception ex) { Output.WriteLine("DIAG ex: {0}", ex.Message); }
+                catch (Exception ex) { Diag("DIAG ex: {0}", ex.Message); }
 
-                Output.WriteLine("DIAG BAR#{0} absBar={1} items={2} pEmpty={3} ask={4} bid={5}",
+                Diag("DIAG BAR#{0} absBar={1} items={2} pEmpty={3} ask={4} bid={5}",
                     Bars.CurrentBar, absBar, itemsCount, pEmpty, askD, bidD);
             }
 
@@ -198,6 +213,15 @@ namespace PowerLanguage.Indicator
                 Output.WriteLine("BAR#{0} price={1} delta={2} sig={3} streak={4} narrow={5} rangeATR={6:F3} rawDelta={7} vol={8}",
                     Bars.CurrentBar, priceDir, deltaDir, signal, streakDir, narrow, rangeRatio, curDelta, curVolume);
             }
+        }
+
+        // диагностика: в Output и в файл на диске
+        private const string DiagFile = @"C:\Users\user\TomLeksey\data\DivergenceDetector_diag.log";
+        private void Diag(string fmt, params object[] args)
+        {
+            string line = string.Format(fmt, args);
+            Output.WriteLine(line);
+            try { System.IO.File.AppendAllText(DiagFile, line + System.Environment.NewLine); } catch { }
         }
 
         private int GetPriceDir()
