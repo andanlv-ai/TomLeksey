@@ -717,10 +717,7 @@ namespace PowerLanguage.Strategy
         // ponytail: опрос раз в 2 с, не больше 60 раз; дальше — ручной Status Off/On
         private bool VpReady()
         {
-            var vp = this.VolumeProfile;
-            var svc = vp as IProfilesCollectionService;
-            if (svc != null) svc.Syncronize();
-            bool ready = vp != null && vp.Items != null && vp.Items.Count > 0;
+            bool ready = HasProfiles(this.VolumeProfile) && HasProfiles(Vp2());
             if (!ready)
             {
                 _vpWaiting = true;
@@ -734,6 +731,20 @@ namespace PowerLanguage.Strategy
             }
             if (_vpWaiting) { _vpWaiting = false; _vpPolls = 0; RunEvent("VP_READY"); ExecControl.Recalculate(); return false; }
             return true;
+        }
+
+        private static bool HasProfiles(IProfilesCollection vp)
+        {
+            var svc = vp as IProfilesCollectionService;
+            if (svc != null) svc.Syncronize();
+            return vp != null && vp.Items != null && vp.Items.Count > 0;
+        }
+
+        // Data2 — тот же символ и период, его Volume Profile с Breakdown = Up vs Down Tick Delta.
+        // Нет Data2 — профилей нет, в runs.csv пойдут VP_WAIT.
+        private IProfilesCollection Vp2()
+        {
+            try { return VolumeProfileByDataStream(2); } catch { return null; }
         }
 
         private void RunEvent(string ev)
@@ -773,9 +784,15 @@ namespace PowerLanguage.Strategy
             b.LvPrice = price.ToArray(); b.LvAsk = ask.ToArray(); b.LvBid = bid.ToArray();
             b.Ask = (double)a; b.Bid = (double)s;
             b.Volume = b.Ask + b.Bid;
-            // CQG не отдаёт барам UpTicks/DownTicks (всегда 0). Дельта по сделкам — из профиля:
-            // график на Build Volume on = Tick Count, тогда Ask/Bid профиля — число сделок.
-            b.UpTicks = b.Ask; b.DownTicks = b.Bid;
+
+            // Дельта по сделкам (ап/даунтик, автор В2 21:01) — из профиля Data2. CQG не даёт барам UpTicks/DownTicks.
+            // Индекс бара — от Data1: BarsOfData(2).FullSymbolData.Current бросает исключение; символ и период те же
+            IProfile p2 = null;
+            try { p2 = Vp2().ItemForBar(Bars.FullSymbolData.Current - 1); } catch { }
+            if (p2 == null || p2.Empty) return;
+            decimal up = 0, dn = 0;
+            foreach (ILevel lv in p2.Values) { up += lv.AskTradedValue; dn += lv.BidTradedValue; }
+            b.UpTicks = (double)up; b.DownTicks = (double)dn;
             b.NoData = b.Volume == 0;
         }
 
