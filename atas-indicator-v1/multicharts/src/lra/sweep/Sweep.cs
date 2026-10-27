@@ -1,6 +1,6 @@
 // Прогон ядра LraTrader по CSV записывателя (BP6Z26_TICKS = Data1 аск/бид, BP6Z26_UPDN = Data2 ап/даунтик)
 // и перебор порогов по одному. Повторяет цикл CalcBar из Strategy.cs без MultiCharts.
-// Сборка и запуск: bash src/lra/sweep/run.sh
+// Сборка и запуск: [SYM=EU6Z26] bash src/lra/sweep/run.sh [папка [only|cum|frac]]
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -16,13 +16,16 @@ namespace PowerLanguage.Strategy
         static TimeZoneInfo Chi = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
         static TimeZoneInfo Par = TimeZoneInfo.FindSystemTimeZoneById("Romance Standard Time");
         static string[] News = { "14:30-15:30", "19:00-21:00" };
+        // Символ — переменная окружения SYM (по умолчанию фунт). Тик — как в MultiCharts у этого контракта.
+        static string Sym = Environment.GetEnvironmentVariable("SYM") ?? "BP6Z26";
+        static double Tick = Sym.StartsWith("EU") ? 0.00005 : 0.0001;
 
         static List<LraBar> Load(string dir)
         {
             var up = new Dictionary<string, string[]>();
-            foreach (string l in File.ReadLines(Path.Combine(dir, "BP6Z26_UPDN.csv")).Skip(1)) { var f = l.Split(','); up[f[0]] = f; }
+            foreach (string l in File.ReadLines(Path.Combine(dir, Sym + "_UPDN.csv")).Skip(1)) { var f = l.Split(','); up[f[0]] = f; }
             var res = new List<LraBar>();
-            foreach (string l in File.ReadLines(Path.Combine(dir, "BP6Z26_TICKS.csv")).Skip(1))
+            foreach (string l in File.ReadLines(Path.Combine(dir, Sym + "_TICKS.csv")).Skip(1))
             {
                 var f = l.Split(',');
                 DateTime t = DateTime.ParseExact(f[0], "yyyy-MM-dd HH:mm", CI);
@@ -103,12 +106,36 @@ namespace PowerLanguage.Strategy
 
         public static double MaxRR = 0, MinTp = 0;
         public static DateTime CountFrom = DateTime.MinValue, CountTo = DateTime.MaxValue;
-        static LraSettings Def() { return new LraSettings { Tick = 0.0001 }; }
+        static LraSettings Def() { return new LraSettings { Tick = Tick }; }
 
         static void Print(string name, Result r)
         {
             Console.WriteLine("{0,-34} взято {2,3}  сделок {3,3}  +{4,3} -{5,3}  итог {6,5:0} п.  на сделку {7,5:0.0}  просадка {8,4:0}  10/10: {9}/{10}",
                 name, r.Sig, r.Taken, r.Trades, r.Win, r.Loss, r.Pips, r.Trades > 0 ? r.Pips / r.Trades : 0, r.MaxDd, r.QW, r.QL);
+        }
+
+        // Стоп и тейк по фракталам: ширина фрактала × предел стопа × предел тейка × тейк не меньше × стоп не больше тейка.
+        static void FracGrid(List<LraBar> bars)
+        {
+            var rows = new List<Tuple<string, Result>>();
+            foreach (int fb in new[] { 1, 2, 3 })
+            foreach (double st in new[] { 15.0, 20.0, 30.0, 40.0 })
+            foreach (double tp in new[] { 10.0, 15.0, 20.0, 30.0 })
+            foreach (double minTp in new[] { 0.0, 5.0, 10.0 })
+            foreach (double rr in new[] { 0.0, 1.0 })
+            {
+                var s = Def(); s.FractalBars = fb; s.MaxStopPips = st; s.MaxTakePips = tp; MinTp = minTp; MaxRR = rr;
+                rows.Add(Tuple.Create(string.Format(CI, "фр{0} стоп{1} тейк{2} мин{3} rr{4}", fb, st, tp, minTp, rr), Run(bars, s)));
+            }
+            MinTp = 0; MaxRR = 0;
+            Console.WriteLine("\n--- среднее по вариантам для каждого значения ---");
+            foreach (string key in new[] { "фр", "стоп", "тейк", "мин", "rr" })
+                foreach (var g in rows.GroupBy(r => r.Item1.Split(' ').First(x => x.StartsWith(key))))
+                    Console.WriteLine("{0,-10} сделок {1,5:0.0}  итог {2,6:0} п.  на сделку {3,5:0.0}  просадка {4,4:0}", g.Key,
+                        g.Average(r => r.Item2.Trades), g.Average(r => r.Item2.Pips),
+                        g.Average(r => r.Item2.Trades > 0 ? r.Item2.Pips / r.Item2.Trades : 0), g.Average(r => r.Item2.MaxDd));
+            Console.WriteLine("\n--- 15 лучших (сделок >= 6) ---");
+            foreach (var r in rows.Where(r => r.Item2.Trades >= 6).OrderByDescending(r => r.Item2.Pips).Take(15)) Print(r.Item1, r.Item2);
         }
 
         public static void Main(string[] args)
@@ -117,6 +144,7 @@ namespace PowerLanguage.Strategy
             Console.WriteLine("баров {0}, с данными {1}", bars.Count, bars.Count(b => !b.NoData));
             Print("ПО УМОЛЧАНИЮ", Run(bars, Def()));
             if (args.Length > 1 && args[1] == "cum") { CumGrid(bars); return; }
+            if (args.Length > 1 && args[1] == "frac") { FracGrid(bars); return; }
             if (args.Length > 1) return;
             var grid = new Dictionary<string, object[]>
             {

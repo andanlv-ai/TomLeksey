@@ -124,7 +124,8 @@ MultiCharts сам перекомпилирует его и пересчитае
 
 `bash src/lra/sweep/run.sh` (из `atas-indicator-v1/multicharts`) — ядро советника по файлам записывателя
 `D:\TradeLog\Bars\BP6Z26_TICKS.csv` и `BP6Z26_UPDN.csv`, перебор порогов по одному.
-`... run.sh 'D:\TradeLog\Bars' only` — только настройки по умолчанию; `... cum` — перебор режима CUM.
+`... run.sh 'D:\TradeLog\Bars' only` — только настройки по умолчанию; `... cum` — перебор режима CUM;
+`... frac` — стоп и тейк по фракталам. Другой символ — `SYM=EU6Z26 bash src/lra/sweep/run.sh ...`.
 С настройками по умолчанию даёт то же, что MultiCharts, с разницей в 1–2 сделки (иначе считается часовой ATR).
 
 Проверки по BP6Z26, 28.09–27.10 (около 500 часов с профилем):
