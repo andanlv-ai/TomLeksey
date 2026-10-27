@@ -127,6 +127,52 @@ namespace PowerLanguage.Strategy
             return r;
         }
 
+        // Толпа по кумулятивной дельте по сделкам (автор: В2 19:17, 22:05; В4 02:28).
+        // Начало роста — минимум (толпа покупает) или максимум (продаёт) кумулятивной дельты за CumLookback баров,
+        // не ближе CumMinBars баров к текущему. Толпа есть, если:
+        // рост / объём с начала роста >= CumWeight; дельта по объёму за то же время не против (CONFLICT, как в Measure);
+        // в сторону толпы перекошено >= MinLevels цен; цена за время роста не вышла за хай (лоу) бара начала роста.
+        // Из двух сторон берётся та, у которой вес больше. Возвращает дисбаланс окна from..last с Dir толпы или null.
+        public static LraImbalance Cum(IList<LraBar> h, LraSettings s, out int from)
+        {
+            from = -1;
+            int last = h.Count - 1;
+            int b0 = Math.Max(0, last - s.CumLookback);   // база: кумулятивная дельта здесь = 0
+            if (last - b0 < s.CumMinBars) return null;
+            var c = new double[last - b0 + 1];
+            for (int k = b0 + 1; k <= last; k++)
+            {
+                if (h[k].NoData) return null;
+                c[k - b0] = c[k - b0 - 1] + h[k].UpTicks - h[k].DownTicks;
+            }
+            int mn = b0, mx = b0;
+            for (int k = b0; k <= last - s.CumMinBars; k++)
+            {
+                if (c[k - b0] < c[mn - b0]) mn = k;
+                if (c[k - b0] > c[mx - b0]) mx = k;
+            }
+
+            LraImbalance best = null; double bestW = 0;
+            foreach (int d in new[] { 1, -1 })
+            {
+                int m = d > 0 ? mn : mx;
+                double g = c[last - b0] - c[m - b0], vol = 0, vd = 0;
+                for (int k = m + 1; k <= last; k++) { vol += h[k].UpTicks + h[k].DownTicks; vd += h[k].Ask - h[k].Bid; }
+                if (vol <= 0 || g * d <= 0) continue;
+                double w = Math.Abs(g) / vol;
+                if (w < s.CumWeight || w <= bestW) continue;
+                if (-d * vd / vol >= s.MinShare) continue;
+                bool broke = false;
+                for (int k = m + 1; k <= last; k++) if (d > 0 ? h[k].High > h[m].High : h[k].Low < h[m].Low) broke = true;
+                if (broke) continue;
+                LraImbalance r = Measure(h, m + 1, last, s);
+                if ((d > 0 ? r.BuyLevels : r.SellLevels) < s.MinLevels) continue;
+                r.Dir = d; r.Reason = "";
+                best = r; bestW = w; from = m + 1;
+            }
+            return best;
+        }
+
         // Объём и число сделок (UpTicks + DownTicks) торгового дня бара h[idx] (дата Paris), от начала дня до idx включительно.
         public static void DayTotals(IList<LraBar> h, int idx, out double volume, out double ticks)
         {
@@ -383,18 +429,29 @@ namespace PowerLanguage.Strategy
         {
             var res = new List<LraSignal>();
             int last = h.Count - 1;
-            if (last - s.ImbBars < 0) return res;
-
-            int winFrom = h.Count - s.ImbBars;
-            LraImbalance crowd = LraImb.Measure(h, winFrom, last, s);
-            if (crowd.Dir == 0) return res;
-
             double entry = h[last].Close;
-            double move = entry - h[last - s.ImbBars].Close;
-            bool strong = Math.Abs(move) >= s.StrongAtr * atr;
-            bool a = move * crowd.Dir <= s.StallAtr * atr && !strong; // сильное движение — только D
-            bool d = strong && Math.Sign(move) == -crowd.Dir;
-            if (!a && !d) return res;
+            int winFrom;
+            LraImbalance crowd;
+            bool a, d;
+            if (s.CrowdMode == "CUM")
+            {
+                // цена уже проверена в Cum: не вышла за хай/лоу начала роста. Сценарий D — только в режиме WINDOW.
+                crowd = LraImb.Cum(h, s, out winFrom);
+                if (crowd == null) return res;
+                a = true; d = false;
+            }
+            else
+            {
+                if (last - s.ImbBars < 0) return res;
+                winFrom = h.Count - s.ImbBars;
+                crowd = LraImb.Measure(h, winFrom, last, s);
+                if (crowd.Dir == 0) return res;
+                double move = entry - h[last - s.ImbBars].Close;
+                bool strong = Math.Abs(move) >= s.StrongAtr * atr;
+                a = move * crowd.Dir <= s.StallAtr * atr && !strong; // сильное движение — только D
+                d = strong && Math.Sign(move) == -crowd.Dir;
+                if (!a && !d) return res;
+            }
 
             // Направление, SL, TP, фильтр ЛРА — общие для A и D.
             int dir = -crowd.Dir;
@@ -452,6 +509,10 @@ namespace PowerLanguage.Strategy
     // Параметры (ТЗ §9) + размеры тика и пипса. Значения по умолчанию — стартовые.
     public class LraSettings
     {
+        public string CrowdMode = "CUM";          // CUM — кумулятивная дельта от начала роста; WINDOW — окно ImbBars
+        public int    CumLookback = 12;            // CUM: начало роста ищется не дальше стольких баров назад
+        public int    CumMinBars = 2;              // CUM: рост — не короче стольких баров
+        public double CumWeight = 0.05;            // CUM: рост дельты по сделкам / объём с начала роста
         public int    ImbBars = 2;
         public double MinShare = 0.05;
         public double LevelImbPct = 0.3;
@@ -532,6 +593,9 @@ namespace PowerLanguage.Strategy
     public class LraTrader : SignalObject
     {
         // ---- Параметры (ТЗ §9) ----
+        [Input] public string CrowdMode       { get; set; }  // CUM | WINDOW
+        [Input] public int    CumLookback     { get; set; }
+        [Input] public double CumWeight       { get; set; }
         [Input] public int    ImbBars         { get; set; }
         [Input] public double MinShare        { get; set; }
         [Input] public double LevelImbPct     { get; set; }
@@ -580,6 +644,9 @@ namespace PowerLanguage.Strategy
 
         public LraTrader(object ctx) : base(ctx)
         {
+            CrowdMode       = "CUM";
+            CumLookback     = 12;
+            CumWeight       = 0.05;
             ImbBars         = 2;
             MinShare        = 0.05;
             LevelImbPct     = 0.3;
@@ -610,6 +677,7 @@ namespace PowerLanguage.Strategy
         {
             _s = new LraSettings
             {
+                CrowdMode = CrowdMode, CumLookback = CumLookback, CumWeight = CumWeight,
                 ImbBars = ImbBars, MinShare = MinShare, LevelImbPct = LevelImbPct, MinLevels = MinLevels,
                 MaxRangePips = MaxRangePips, MinRangeBars = MinRangeBars, MinActiveBars = MinActiveBars,
                 MaxRangeAgeBars = MaxRangeAgeBars, SwingLookback = SwingLookback, FractalBars = FractalBars, OffsetTicks = OffsetTicks,
@@ -646,11 +714,11 @@ namespace PowerLanguage.Strategy
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
-                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26}",
+                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26} CrowdMode={28} CumLookback={29} CumWeight={30}",
                     DateTime.Now, _sym, Version, ImbBars, MinShare, LevelImbPct, MinLevels, MaxRangePips, MinRangeBars,
                     MinActiveBars, MaxRangeAgeBars, SwingLookback, OffsetTicks, AtrPeriod, StallAtr, StrongAtr,
                     MaxStopPips, MaxTakePips, AddStepPips, AddTargetMode, LraMinDistPips, DayTargetShare, PipSize,
-                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars));
+                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars, CrowdMode, CumLookback, CumWeight));
         }
 
         protected override void StopCalc()

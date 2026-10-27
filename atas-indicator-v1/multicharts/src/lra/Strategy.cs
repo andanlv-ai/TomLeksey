@@ -12,6 +12,9 @@ namespace PowerLanguage.Strategy
     public class LraTrader : SignalObject
     {
         // ---- Параметры (ТЗ §9) ----
+        [Input] public string CrowdMode       { get; set; }  // CUM | WINDOW
+        [Input] public int    CumLookback     { get; set; }
+        [Input] public double CumWeight       { get; set; }
         [Input] public int    ImbBars         { get; set; }
         [Input] public double MinShare        { get; set; }
         [Input] public double LevelImbPct     { get; set; }
@@ -60,6 +63,9 @@ namespace PowerLanguage.Strategy
 
         public LraTrader(object ctx) : base(ctx)
         {
+            CrowdMode       = "CUM";
+            CumLookback     = 12;
+            CumWeight       = 0.05;
             ImbBars         = 2;
             MinShare        = 0.05;
             LevelImbPct     = 0.3;
@@ -90,6 +96,7 @@ namespace PowerLanguage.Strategy
         {
             _s = new LraSettings
             {
+                CrowdMode = CrowdMode, CumLookback = CumLookback, CumWeight = CumWeight,
                 ImbBars = ImbBars, MinShare = MinShare, LevelImbPct = LevelImbPct, MinLevels = MinLevels,
                 MaxRangePips = MaxRangePips, MinRangeBars = MinRangeBars, MinActiveBars = MinActiveBars,
                 MaxRangeAgeBars = MaxRangeAgeBars, SwingLookback = SwingLookback, FractalBars = FractalBars, OffsetTicks = OffsetTicks,
@@ -126,11 +133,11 @@ namespace PowerLanguage.Strategy
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
-                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26}",
+                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26} CrowdMode={28} CumLookback={29} CumWeight={30}",
                     DateTime.Now, _sym, Version, ImbBars, MinShare, LevelImbPct, MinLevels, MaxRangePips, MinRangeBars,
                     MinActiveBars, MaxRangeAgeBars, SwingLookback, OffsetTicks, AtrPeriod, StallAtr, StrongAtr,
                     MaxStopPips, MaxTakePips, AddStepPips, AddTargetMode, LraMinDistPips, DayTargetShare, PipSize,
-                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars));
+                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars, CrowdMode, CumLookback, CumWeight));
         }
 
         protected override void StopCalc()

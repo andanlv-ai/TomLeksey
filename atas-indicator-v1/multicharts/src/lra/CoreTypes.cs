@@ -21,6 +21,10 @@ namespace PowerLanguage.Strategy
     // Параметры (ТЗ §9) + размеры тика и пипса. Значения по умолчанию — стартовые.
     public class LraSettings
     {
+        public string CrowdMode = "CUM";          // CUM — кумулятивная дельта от начала роста; WINDOW — окно ImbBars
+        public int    CumLookback = 12;            // CUM: начало роста ищется не дальше стольких баров назад
+        public int    CumMinBars = 2;              // CUM: рост — не короче стольких баров
+        public double CumWeight = 0.05;            // CUM: рост дельты по сделкам / объём с начала роста
         public int    ImbBars = 2;
         public double MinShare = 0.05;
         public double LevelImbPct = 0.3;

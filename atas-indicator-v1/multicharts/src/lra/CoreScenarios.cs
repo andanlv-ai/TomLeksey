@@ -11,18 +11,29 @@ namespace PowerLanguage.Strategy
         {
             var res = new List<LraSignal>();
             int last = h.Count - 1;
-            if (last - s.ImbBars < 0) return res;
-
-            int winFrom = h.Count - s.ImbBars;
-            LraImbalance crowd = LraImb.Measure(h, winFrom, last, s);
-            if (crowd.Dir == 0) return res;
-
             double entry = h[last].Close;
-            double move = entry - h[last - s.ImbBars].Close;
-            bool strong = Math.Abs(move) >= s.StrongAtr * atr;
-            bool a = move * crowd.Dir <= s.StallAtr * atr && !strong; // сильное движение — только D
-            bool d = strong && Math.Sign(move) == -crowd.Dir;
-            if (!a && !d) return res;
+            int winFrom;
+            LraImbalance crowd;
+            bool a, d;
+            if (s.CrowdMode == "CUM")
+            {
+                // цена уже проверена в Cum: не вышла за хай/лоу начала роста. Сценарий D — только в режиме WINDOW.
+                crowd = LraImb.Cum(h, s, out winFrom);
+                if (crowd == null) return res;
+                a = true; d = false;
+            }
+            else
+            {
+                if (last - s.ImbBars < 0) return res;
+                winFrom = h.Count - s.ImbBars;
+                crowd = LraImb.Measure(h, winFrom, last, s);
+                if (crowd.Dir == 0) return res;
+                double move = entry - h[last - s.ImbBars].Close;
+                bool strong = Math.Abs(move) >= s.StrongAtr * atr;
+                a = move * crowd.Dir <= s.StallAtr * atr && !strong; // сильное движение — только D
+                d = strong && Math.Sign(move) == -crowd.Dir;
+                if (!a && !d) return res;
+            }
 
             // Направление, SL, TP, фильтр ЛРА — общие для A и D.
             int dir = -crowd.Dir;

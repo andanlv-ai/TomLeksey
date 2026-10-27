@@ -43,7 +43,7 @@ namespace PowerLanguage.Strategy
 
         static LraSettings S()
         {
-            return new LraSettings { Tick = 0.5, PipSize = 1, OffsetTicks = 1, ImbBars = 2, FractalBars = 1 };
+            return new LraSettings { Tick = 0.5, PipSize = 1, OffsetTicks = 1, ImbBars = 2, FractalBars = 1, CrowdMode = "WINDOW" };
         }
 
         static LraSignal Find(List<LraSignal> r, string book)
