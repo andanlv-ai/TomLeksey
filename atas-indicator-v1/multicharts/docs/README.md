@@ -16,6 +16,14 @@ atas-indicator-v1/multicharts/
 - [DEVELOPMENT.md](DEVELOPMENT.md) — воркфлоу компиляции, загрузки в MC, отладка
 - [VolumeProfile_API.md](VolumeProfile_API.md) — справка по `IProfile`/`ILevel` и Ask/Bid TradedValue
 
+## Советник
+
+### LraTrader ✅ виртуальная торговля
+
+- [LraTrader/README.md](LraTrader/README.md) — настройка графика, алгоритм, параметры, файлы, записыватель BarRecorder, прогон без MultiCharts
+- [LraTrader/tz.md](LraTrader/tz.md) — исходное ТЗ v0.1
+- Исходники: [../src/lra/](../src/lra/) → [../src/LraTrader.Strategy.CS](../src/LraTrader.Strategy.CS); записыватель [../src/BarRecorder.Indicator.MC.CS](../src/BarRecorder.Indicator.MC.CS)
+
 ## Индикаторы
 
 ### TradesAlert ✅ реализован
