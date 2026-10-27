@@ -759,7 +759,8 @@ namespace PowerLanguage.Strategy
             var svc = vp as IProfilesCollectionService;
             if (svc != null) svc.Syncronize();
             IProfile p = null;
-            try { p = vp.ItemForBar(Bars.FullSymbolData.Current); } catch { }
+            // ItemForBar(Current) отдаёт профиль следующего бара (сверено по High/Low в CSV BarRecorder), поэтому -1
+            try { p = vp.ItemForBar(Bars.FullSymbolData.Current - 1); } catch { }
             if (p == null || p.Empty) return;
 
             var price = new List<double>(); var ask = new List<double>(); var bid = new List<double>();
@@ -772,6 +773,9 @@ namespace PowerLanguage.Strategy
             b.LvPrice = price.ToArray(); b.LvAsk = ask.ToArray(); b.LvBid = bid.ToArray();
             b.Ask = (double)a; b.Bid = (double)s;
             b.Volume = b.Ask + b.Bid;
+            // CQG не отдаёт барам UpTicks/DownTicks (всегда 0). Дельта по сделкам — из профиля:
+            // график на Build Volume on = Tick Count, тогда Ask/Bid профиля — число сделок.
+            b.UpTicks = b.Ask; b.DownTicks = b.Bid;
             b.NoData = b.Volume == 0;
         }
 
