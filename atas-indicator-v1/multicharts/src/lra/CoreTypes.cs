@@ -30,6 +30,7 @@ namespace PowerLanguage.Strategy
         public int    MinActiveBars = 2;
         public int    MaxRangeAgeBars = 120;
         public int    SwingLookback = 48;
+        public int    FractalBars = 2;             // фрактал: хай выше (лоу ниже) FractalBars соседей с каждой стороны
         public int    OffsetTicks = 1;
         public int    AtrPeriod = 14;
         public double StallAtr = 0.5;

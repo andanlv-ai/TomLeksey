@@ -9,7 +9,7 @@ namespace PowerLanguage.Strategy
 
         public static void Run()
         {
-            var s = new LraSettings { SwingLookback = 6, OffsetTicks = 1, Tick = 0.5, PipSize = 1 };
+            var s = new LraSettings { SwingLookback = 6, OffsetTicks = 1, Tick = 0.5, PipSize = 1, FractalBars = 1 };
 
             // верхние свинги: idx2 (High 12), idx5 (High 15, выше всех), idx7 (High 11, ниже цены 13); idx8 - последний бар
             var up = new List<LraBar> {
@@ -30,6 +30,11 @@ namespace PowerLanguage.Strategy
             var dn = new List<LraBar> { B(9, 8), B(9, 5), B(9, 8), B(9, 7), B(9, 8) };
             TestMain.Check(TestMain.Near(LraLevels.Nearest(dn, -1, 9, s), 6.5), "Nearest -1: нижний свинг с отступом вниз");
             TestMain.Check(double.IsNaN(LraLevels.Nearest(dn, -1, 4, s)), "Nearest -1: свинг выше цены не берётся");
+
+            // FractalBars = 2: idx7 (11) — справа один бар, не фрактал; idx5 (15) выше двух соседей с каждой стороны
+            s.FractalBars = 2;
+            TestMain.Check(TestMain.Near(LraLevels.Nearest(up, 1, 10, s), 15.5), "Nearest FractalBars=2: узкий свинг пропускается");
+            s.FractalBars = 1;
 
             // DayAtr: 4 полных дня 10/20/30/40 + неполный текущий
             var h = new List<LraBar>();

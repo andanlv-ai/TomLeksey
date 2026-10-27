@@ -20,6 +20,7 @@ namespace PowerLanguage.Strategy
         [Input] public int    MinActiveBars   { get; set; }
         [Input] public int    MaxRangeAgeBars { get; set; }
         [Input] public int    SwingLookback   { get; set; }
+        [Input] public int    FractalBars     { get; set; }
         [Input] public int    OffsetTicks     { get; set; }
         [Input] public int    AtrPeriod       { get; set; }
         [Input] public double StallAtr        { get; set; }
@@ -64,6 +65,7 @@ namespace PowerLanguage.Strategy
             MinActiveBars   = 2;
             MaxRangeAgeBars = 120;
             SwingLookback   = 48;
+            FractalBars     = 2;
             OffsetTicks     = 1;
             AtrPeriod       = 14;
             StallAtr        = 0.5;
@@ -86,7 +88,7 @@ namespace PowerLanguage.Strategy
             {
                 ImbBars = ImbBars, MinShare = MinShare, LevelImbPct = LevelImbPct, MinLevels = MinLevels,
                 MaxRangePips = MaxRangePips, MinRangeBars = MinRangeBars, MinActiveBars = MinActiveBars,
-                MaxRangeAgeBars = MaxRangeAgeBars, SwingLookback = SwingLookback, OffsetTicks = OffsetTicks,
+                MaxRangeAgeBars = MaxRangeAgeBars, SwingLookback = SwingLookback, FractalBars = FractalBars, OffsetTicks = OffsetTicks,
                 AtrPeriod = AtrPeriod, StallAtr = StallAtr, StrongAtr = StrongAtr, MaxStopPips = MaxStopPips,
                 MaxTakePips = MaxTakePips, AddStepPips = AddStepPips, AddTargetMode = AddTargetMode,
                 LraMinDistPips = LraMinDistPips, DayTargetShare = DayTargetShare, PipSize = PipSize,
@@ -118,11 +120,11 @@ namespace PowerLanguage.Strategy
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
-                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26}",
+                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26}",
                     DateTime.Now, _sym, Version, ImbBars, MinShare, LevelImbPct, MinLevels, MaxRangePips, MinRangeBars,
                     MinActiveBars, MaxRangeAgeBars, SwingLookback, OffsetTicks, AtrPeriod, StallAtr, StrongAtr,
                     MaxStopPips, MaxTakePips, AddStepPips, AddTargetMode, LraMinDistPips, DayTargetShare, PipSize,
-                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick));
+                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars));
         }
 
         protected override void StopCalc()
