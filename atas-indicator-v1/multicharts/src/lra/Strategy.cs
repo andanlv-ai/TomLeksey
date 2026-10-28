@@ -192,7 +192,8 @@ namespace PowerLanguage.Strategy
             };
             FillProfile(b);
             _h.Add(b);
-            if (Algo == "FAST_TP") { if (Bars.LastBarOnChart) CalcFast(t); return; }
+            // в истории последний бар графика ещё не закрыт и Close не приходит — считаем на последнем закрытом
+            if (Algo == "FAST_TP") { if (Bars.LastBarOnChart || Bars.Time[0].AddHours(1) >= Bars.LastBarTime) CalcFast(t); return; }
 
             // ---- Сопровождение позиций (ТЗ §7, §8) ----
             double atr = this.AverageTrueRange(AtrPeriod);
@@ -283,6 +284,7 @@ namespace PowerLanguage.Strategy
             foreach (LraTicks.Ev e in _evs) _ticks.Trade(a, _h, e, "FAST_TP", false);
             LraTicks.Simulate(_evs);
             List<LraTicks.Ev> evs = _evs;
+            int drawn0 = _fast.Count;
             string src = Environment.IsRealTimeCalc ? "LIVE" : "HIST";
             foreach (LraTicks.Ev e in evs)
             {
@@ -295,6 +297,7 @@ namespace PowerLanguage.Strategy
                 if (e.Skip != "") continue;
                 FastMarks m;
                 DateTime te = new DateTime(e.TEntry), bar = BarOf(te);
+                if (Lost(e.TEntry)) { _fast.Remove(e.TEntry); RunEvent("FAST_LOST " + te.ToString("yyyy-MM-dd HH:mm", CI)); }
                 if (!_fast.TryGetValue(e.TEntry, out m))
                 {
                     int dir = e.Side;   // вместе с толпой
@@ -327,7 +330,13 @@ namespace PowerLanguage.Strategy
                     tx0, ToParis(tx0), _sym, e.Side > 0 ? "BUY" : "SELL", te, ToParis(te), e.Side, F(e.Entry), F(e.SL), F(e.TP),
                     tx0, F(e.Exit), e.Reason, F(pips), F(e.Pips * PipSize * Bars.Info.BigPointValue - CommissionUsd), src, Version));
             }
+            if (_fast.Count != drawn0)   // диагностика: когда и сколько сделок нарисовано
+                RunEvent(string.Format(CI, "FAST_DRAW status={0} rt={1} bar={2:yyyy-MM-dd HH:mm} trades={3}", Bars.Status,
+                    Environment.IsRealTimeCalc, now, _fast.Count));
         }
+
+        // MultiCharts мог стереть рисунки, созданные внутри бара, — тогда рисуем сделку заново
+        private bool Lost(long key) { FastMarks m; return _fast.TryGetValue(key, out m) && !m.Entry.Exist; }
 
         // Часовой бар, в который попала сделка ленты: время бара — его закрытие
         private static DateTime BarOf(DateTime t) { return t.Date.AddHours(t.Hour + 1); }
