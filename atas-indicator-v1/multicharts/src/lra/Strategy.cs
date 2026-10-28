@@ -103,7 +103,7 @@ namespace PowerLanguage.Strategy
             LraMinDistPips  = 30;
             DayTargetShare  = 0.5;
             PipSize         = 0.0001;
-            CommissionUsd   = 0;
+            CommissionUsd   = 5;   // решение пользователя, 2026-10-28
             LogDir          = @"D:\TradeLog\LRA";
             NewsWindows     = "14:30-15:30;19:00-21:00";
         }

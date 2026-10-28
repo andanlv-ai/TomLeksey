@@ -195,6 +195,10 @@ namespace PowerLanguage.Strategy
         // с WeekendClose по времени биржи (Чикаго; лента пишется во времени биржи), CME закрывается в 16:00.
         // Вход с WeekendClose пятницы — пропуск WEEKEND. Праздничные ранние закрытия не учтены.
         public static readonly TimeSpan WeekendClose = new TimeSpan(15, 55, 0);
+        // Проскальзывание (решение пользователя, 2026-10-28): заявки по рынку — вход, стоп, выход по времени и перед
+        // выходными — исполняются на SlipTicks тиков хуже. Тейк — лимитная заявка, по своей цене. Комиссия — в долларах
+        // (советник: CommissionUsd, прогон: pat/halves.py).
+        public const int SlipTicks = 1;
         public static long FridayClose(long t)
         {
             DateTime d = new DateTime(t).Date;
@@ -222,19 +226,19 @@ namespace PowerLanguage.Strategy
                     if (d * (a.P[k] - near) >= 0) { j = k; break; }
                 }
                 if (j < 0) { e.Skip = double.IsNaN(ext) ? "NO_SWEEP" : "NO_RETURN"; return; }
-                e.Entry = a.P[j]; e.TEntry = a.T[j]; e.SL = ext - d * Tick; e.TP = double.NaN;
-                if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) { e.Skip = "FAR_STOP"; return; }
+                e.Entry = a.P[j] + d * SlipTicks * Tick; e.TEntry = a.T[j]; e.SL = ext - d * Tick; e.TP = double.NaN;
+                if (Math.Round(Math.Abs(e.SL - e.Entry) / Pip, 6) > MaxStopPips) { e.Skip = "FAR_STOP"; return; }
                 long cutS = FridayClose(e.TEntry);
                 if (e.TEntry >= cutS) { e.Skip = "WEEKEND"; return; }
                 e.Reason = "TIME"; int lastK = j;
                 for (int k = j; k < a.N && a.T[k] <= e.TEntry + FastHold.Ticks; k++)
                 {
                     lastK = k;
-                    if (a.T[k] >= cutS) { e.Reason = "WEEKEND"; e.Exit = a.P[k]; e.TExit = a.T[k]; break; }
-                    if (d * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
+                    if (a.T[k] >= cutS) { e.Reason = "WEEKEND"; e.Exit = a.P[k] - d * SlipTicks * Tick; e.TExit = a.T[k]; break; }
+                    if (d * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL - d * SlipTicks * Tick; e.TExit = a.T[k]; break; }
                 }
-                if (e.Reason == "TIME") { e.Exit = a.P[lastK]; e.TExit = a.T[lastK]; }
-                if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(e.TEntry + FastHold.Ticks, cutS)) e.Reason = "OPEN";
+                if (e.Reason == "TIME") { e.Exit = a.P[lastK] - d * SlipTicks * Tick; e.TExit = a.T[lastK]; }
+                if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(e.TEntry + FastHold.Ticks, cutS)) { e.Reason = "OPEN"; e.Exit = a.P[lastK]; }
                 e.Pips = d * (e.Exit - e.Entry) / Pip;
                 return;
             }
@@ -245,6 +249,7 @@ namespace PowerLanguage.Strategy
             bool fast = mode.StartsWith("FAST");
             if (fast && e.TFirst - e.TS > FastSet.Ticks) { e.Skip = "SLOW"; return; }
             int dir = mode == "WITH" || fast ? e.Side : -e.Side;
+            e.Entry += dir * SlipTicks * Tick;
             if (mode == "FAST") e.SL = e.Entry - dir * 1.0;   // недостижимо
             else if (mode == "WITH" || mode == "FAST_SL" || mode == "FAST_TP") e.SL = e.Target;
             else if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
@@ -270,7 +275,7 @@ namespace PowerLanguage.Strategy
             else e.TP = fast ? e.Entry + dir * 1.0 : mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
             if (dir * (e.TP - e.Entry) <= 0) e.Skip = "TP_PASSED";
             else if (dir * (e.Entry - e.SL) <= 0) e.Skip = "SL_PASSED";
-            else if (mode != "FAST" && Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
+            else if (mode != "FAST" && Math.Round(Math.Abs(e.SL - e.Entry) / Pip, 6) > MaxStopPips) e.Skip = "FAR_STOP";
             if (e.Skip != "") return;
             long cut = FridayClose(e.TEntry), end = e.TFirst + (fast ? FastHold : Hold).Ticks;
             if (e.TEntry >= cut) { e.Skip = "WEEKEND"; return; }
@@ -280,15 +285,15 @@ namespace PowerLanguage.Strategy
             for (int k = i; k < a.N && a.T[k] <= end; k++)
             {
                 last = k; flow += e.Side * a.D[k];
-                if (a.T[k] >= cut) { e.Reason = "WEEKEND"; e.Exit = a.P[k]; e.TExit = a.T[k]; break; }
-                if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
+                if (a.T[k] >= cut) { e.Reason = "WEEKEND"; e.Exit = a.P[k] - dir * SlipTicks * Tick; e.TExit = a.T[k]; break; }
+                if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL - dir * SlipTicks * Tick; e.TExit = a.T[k]; break; }
                 if (dir * (a.P[k] - tp) >= 0) { e.Reason = "TP"; e.Exit = tp; e.TExit = a.T[k]; break; }
                 if (add && !e.Added && dir * (a.P[k] - addAt) <= 0 && flow >= 0 && dir * (addAt - e.SL) > 0)
                 { e.Added = true; tp = dir * (edge - addAt) > 0 ? edge : e.Entry; }
             }
-            if (e.Reason == "TIME") { e.Exit = a.P[last]; e.TExit = a.T[last]; }
+            if (e.Reason == "TIME") { e.Exit = a.P[last] - dir * SlipTicks * Tick; e.TExit = a.T[last]; }
             // лента кончилась раньше срока выхода — сделка ещё открыта; Pips — по последней цене
-            if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(end, cut)) e.Reason = "OPEN";
+            if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(end, cut)) { e.Reason = "OPEN"; e.Exit = a.P[last]; }
             e.Pips = dir * (e.Exit - e.Entry) / Pip + (e.Added ? dir * (e.Exit - addAt) / Pip : 0);
         }
 
