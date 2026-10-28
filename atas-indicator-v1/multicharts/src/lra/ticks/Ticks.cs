@@ -58,9 +58,10 @@ namespace PowerLanguage.Strategy
                     List<Ev> evs = Detect(v.Item2, hours);
                     foreach (Ev e in evs) Follow(v.Item2, hours, e);
                     Summary(sum, sym, v.Item1, v.Item2, evs);
-                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY" })
+                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH" })
                         foreach (bool add in new[] { false, true })
                         {
+                            if (mode == "WITH" && add) continue;
                             foreach (Ev e in evs) Trade(v.Item2, hours, e, mode, add);
                             Simulate(evs);
                             string name = v.Item1 + "_" + mode + (add ? "_ADD" : "");
@@ -223,8 +224,10 @@ namespace PowerLanguage.Strategy
             e.Skip = e.Reason = ""; e.Pips = 0; e.TExit = 0; e.Added = false;
             int i = Array.BinarySearch(a.T, e.TFirst); if (i < 0) i = ~i;
             if (i >= a.N) { e.Skip = "NO_DATA"; return; }
-            int dir = -e.Side;
-            if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
+            // WITH — вместе с толпой: стоп за уровнем стопов толпы (цель сделки против неё), тейк 15 п.
+            int dir = mode == "WITH" ? e.Side : -e.Side;
+            if (mode == "WITH") e.SL = e.Target;
+            else if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
             else if (mode == "FRACTAL")
                 e.SL = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), e.Side, e.H0,
                     new LraSettings { Tick = Tick, FractalBars = 2 });
@@ -238,7 +241,7 @@ namespace PowerLanguage.Strategy
             }
             if (double.IsNaN(e.SL)) { e.Skip = "NO_STOP"; return; }
             if (double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
-            e.TP = Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
+            e.TP = mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
             if (dir * (e.TP - e.Entry) <= 0) e.Skip = "TP_PASSED";
             else if (dir * (e.Entry - e.SL) <= 0) e.Skip = "SL_PASSED";
             else if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
