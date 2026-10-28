@@ -58,7 +58,7 @@ namespace PowerLanguage.Strategy
                     List<Ev> evs = Detect(v.Item2, hours);
                     foreach (Ev e in evs) Follow(v.Item2, hours, e);
                     Summary(sum, sym, v.Item1, v.Item2, evs);
-                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH", "FAST", "FAST_SL", "SWEEP", "SWEEP_ALL" })
+                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH", "FAST", "FAST_SL", "FAST_TP", "SWEEP", "SWEEP_ALL" })
                         foreach (bool add in new[] { false, true })
                         {
                             if (mode != "H0" && mode != "FRACTAL" && mode != "DAY" && add) continue;
@@ -256,12 +256,13 @@ namespace PowerLanguage.Strategy
             }
             // WITH — вместе с толпой: стоп за уровнем стопов толпы (цель сделки против неё), тейк 15 п.
             // FAST — только быстрый набор (событие не позже FastSet от начала роста), вместе с толпой, без стопа и тейка,
-            // выход через 24 ч; FAST_SL — то же со стопом за уровнем стопов толпы (tz-ticks.md, поиск закономерностей).
+            // выход через 24 ч; FAST_SL — то же со стопом за уровнем стопов толпы (tz-ticks.md, поиск закономерностей);
+            // FAST_TP — FAST_SL + тейк на ближайшем фрактале часовика по ходу сделки (за входом).
             bool fast = mode.StartsWith("FAST");
             if (fast && e.TFirst - e.TS > FastSet.Ticks) { e.Skip = "SLOW"; return; }
             int dir = mode == "WITH" || fast ? e.Side : -e.Side;
             if (mode == "FAST") e.SL = e.Entry - dir * 1.0;   // недостижимо
-            else if (mode == "WITH" || mode == "FAST_SL") e.SL = e.Target;
+            else if (mode == "WITH" || mode == "FAST_SL" || mode == "FAST_TP") e.SL = e.Target;
             else if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
             else if (mode == "FRACTAL")
                 e.SL = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), e.Side, e.H0,
@@ -276,7 +277,13 @@ namespace PowerLanguage.Strategy
             }
             if (double.IsNaN(e.SL)) { e.Skip = "NO_STOP"; return; }
             if (mode != "FAST" && double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
-            e.TP = fast ? e.Entry + dir * 1.0 : mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
+            if (mode == "FAST_TP")
+            {
+                e.TP = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), dir, e.Entry,
+                    new LraSettings { Tick = Tick, FractalBars = 2 });
+                if (double.IsNaN(e.TP)) { e.Skip = "NO_TP"; return; }
+            }
+            else e.TP = fast ? e.Entry + dir * 1.0 : mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
             if (dir * (e.TP - e.Entry) <= 0) e.Skip = "TP_PASSED";
             else if (dir * (e.Entry - e.SL) <= 0) e.Skip = "SL_PASSED";
             else if (mode != "FAST" && Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";

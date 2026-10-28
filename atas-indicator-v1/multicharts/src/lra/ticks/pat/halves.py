@@ -1,7 +1,7 @@
 import csv
 for sym,usd in [('BP6Z26',6.25),('EU6Z26',12.5)]:
   for v in 'FG':
-    for m in ['FAST_SL','SWEEP','SWEEP_ALL']:
+    for m in ['FAST_SL','FAST_TP','SWEEP','SWEEP_ALL']:
       rows=[r for r in csv.DictReader(open(rf'D:\TradeLog\Ticks\events_{sym}_{v}_{m}.csv',encoding='utf-8')) if r['Skip']=='']
       p=[float(r['Pips']) for r in rows]; mid='2026-10-12'
       a=sum(float(r['Pips']) for r in rows if r['Time']<mid); b=sum(float(r['Pips']) for r in rows if r['Time']>=mid)
