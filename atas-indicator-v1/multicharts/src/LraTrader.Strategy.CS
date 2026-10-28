@@ -675,6 +675,16 @@ namespace PowerLanguage.Strategy
         // чем сделок толпы, — добавляем 1 контракт; тейк обоих — возврат к краю зоны со стороны цены.
         public const double AddPips = 10;
         public static readonly TimeSpan FastSet = TimeSpan.FromMinutes(35), FastHold = TimeSpan.FromHours(24);
+
+        // Перед выходными все сделки закрываются (решение пользователя, 2026-10-28): по первой сделке ленты в пятницу
+        // с WeekendClose по времени биржи (Чикаго; лента пишется во времени биржи), CME закрывается в 16:00.
+        // Вход с WeekendClose пятницы — пропуск WEEKEND. Праздничные ранние закрытия не учтены.
+        public static readonly TimeSpan WeekendClose = new TimeSpan(15, 55, 0);
+        public static long FridayClose(long t)
+        {
+            DateTime d = new DateTime(t).Date;
+            return d.AddDays(((int)DayOfWeek.Friday - (int)d.DayOfWeek + 7) % 7).Add(WeekendClose).Ticks;
+        }
         public void Trade(Tape a, List<LraBar> hours, Ev e, string mode, bool add)
         {
             e.Skip = e.Reason = ""; e.Pips = 0; e.TExit = 0; e.Added = false;
@@ -699,13 +709,17 @@ namespace PowerLanguage.Strategy
                 if (j < 0) { e.Skip = double.IsNaN(ext) ? "NO_SWEEP" : "NO_RETURN"; return; }
                 e.Entry = a.P[j]; e.TEntry = a.T[j]; e.SL = ext - d * Tick; e.TP = double.NaN;
                 if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) { e.Skip = "FAR_STOP"; return; }
+                long cutS = FridayClose(e.TEntry);
+                if (e.TEntry >= cutS) { e.Skip = "WEEKEND"; return; }
                 e.Reason = "TIME"; int lastK = j;
                 for (int k = j; k < a.N && a.T[k] <= e.TEntry + FastHold.Ticks; k++)
                 {
                     lastK = k;
+                    if (a.T[k] >= cutS) { e.Reason = "WEEKEND"; e.Exit = a.P[k]; e.TExit = a.T[k]; break; }
                     if (d * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
                 }
                 if (e.Reason == "TIME") { e.Exit = a.P[lastK]; e.TExit = a.T[lastK]; }
+                if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(e.TEntry + FastHold.Ticks, cutS)) e.Reason = "OPEN";
                 e.Pips = d * (e.Exit - e.Entry) / Pip;
                 return;
             }
@@ -743,12 +757,15 @@ namespace PowerLanguage.Strategy
             else if (dir * (e.Entry - e.SL) <= 0) e.Skip = "SL_PASSED";
             else if (mode != "FAST" && Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
             if (e.Skip != "") return;
+            long cut = FridayClose(e.TEntry), end = e.TFirst + (fast ? FastHold : Hold).Ticks;
+            if (e.TEntry >= cut) { e.Skip = "WEEKEND"; return; }
             e.Reason = "TIME";
             double tp = e.TP, addAt = e.Entry - dir * AddPips * Pip, edge = e.Side > 0 ? e.ZoneHi : e.ZoneLo;
             int flow = 0, last = i;   // сделки толпы минус встречные с момента входа
-            for (int k = i; k < a.N && a.T[k] <= e.TFirst + (fast ? FastHold : Hold).Ticks; k++)
+            for (int k = i; k < a.N && a.T[k] <= end; k++)
             {
                 last = k; flow += e.Side * a.D[k];
+                if (a.T[k] >= cut) { e.Reason = "WEEKEND"; e.Exit = a.P[k]; e.TExit = a.T[k]; break; }
                 if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
                 if (dir * (a.P[k] - tp) >= 0) { e.Reason = "TP"; e.Exit = tp; e.TExit = a.T[k]; break; }
                 if (add && !e.Added && dir * (a.P[k] - addAt) <= 0 && flow >= 0 && dir * (addAt - e.SL) > 0)
@@ -756,7 +773,7 @@ namespace PowerLanguage.Strategy
             }
             if (e.Reason == "TIME") { e.Exit = a.P[last]; e.TExit = a.T[last]; }
             // лента кончилась раньше срока выхода — сделка ещё открыта; Pips — по последней цене
-            if (e.Reason == "TIME" && a.T[a.N - 1] < e.TFirst + (fast ? FastHold : Hold).Ticks) e.Reason = "OPEN";
+            if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(end, cut)) e.Reason = "OPEN";
             e.Pips = dir * (e.Exit - e.Entry) / Pip + (e.Added ? dir * (e.Exit - addAt) / Pip : 0);
         }
 
