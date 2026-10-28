@@ -12,6 +12,8 @@ namespace PowerLanguage.Strategy
     public class LraTrader : SignalObject
     {
         // ---- Параметры (ТЗ §9) ----
+        [Input] public string Algo            { get; set; }  // FAST_TP — по тикам (tz-ticks.md); LRA — прежний, по часовым профилям
+        [Input] public string TicksDir        { get; set; }  // FAST_TP: папка <символ>_TRADES.csv (TickRecorder)
         [Input] public string CrowdMode       { get; set; }  // CUM | WINDOW
         [Input] public int    CumLookback     { get; set; }
         [Input] public double CumWeight       { get; set; }
@@ -54,6 +56,10 @@ namespace PowerLanguage.Strategy
         private class UnitMarks { public ITrendLineObject Entry, Tp; public ITextObject TpLabel; }
         private readonly Dictionary<LraUnit, UnitMarks> _unitLines = new Dictionary<LraUnit, UnitMarks>();
         private readonly Dictionary<LraPosition, ITrendLineObject> _slLines = new Dictionary<LraPosition, ITrendLineObject>();
+        private class FastMarks { public ITrendLineObject Entry, Sl, Tp; public bool Done; }
+        private readonly Dictionary<long, FastMarks> _fast = new Dictionary<long, FastMarks>();  // TEntry -> линии сделки
+        private readonly HashSet<long> _fastSignals = new HashSet<long>();
+        private bool _noTicks;
         private bool _vpWaiting;
         private int _vpPolls;
 
@@ -63,6 +69,8 @@ namespace PowerLanguage.Strategy
 
         public LraTrader(object ctx) : base(ctx)
         {
+            Algo            = "FAST_TP";
+            TicksDir        = @"D:\TradeLog\Bars";
             CrowdMode       = "CUM";
             CumLookback     = 12;
             CumWeight       = 0.05;
@@ -130,14 +138,17 @@ namespace PowerLanguage.Strategy
             _pos.Clear();
             _unitLines.Clear();
             _slLines.Clear();
+            _fast.Clear();
+            _fastSignals.Clear();
+            _noTicks = false;
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
-                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26} CrowdMode={28} CumLookback={29} CumWeight={30}",
+                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},Algo={31} TicksDir={32} ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26} CrowdMode={28} CumLookback={29} CumWeight={30}",
                     DateTime.Now, _sym, Version, ImbBars, MinShare, LevelImbPct, MinLevels, MaxRangePips, MinRangeBars,
                     MinActiveBars, MaxRangeAgeBars, SwingLookback, OffsetTicks, AtrPeriod, StallAtr, StrongAtr,
                     MaxStopPips, MaxTakePips, AddStepPips, AddTargetMode, LraMinDistPips, DayTargetShare, PipSize,
-                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars, CrowdMode, CumLookback, CumWeight));
+                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars, CrowdMode, CumLookback, CumWeight, Algo, TicksDir));
         }
 
         protected override void StopCalc()
@@ -162,6 +173,7 @@ namespace PowerLanguage.Strategy
             };
             FillProfile(b);
             _h.Add(b);
+            if (Algo == "FAST_TP") { if (Bars.LastBarOnChart) CalcFast(t); return; }
 
             // ---- Сопровождение позиций (ТЗ §7, §8) ----
             double atr = this.AverageTrueRange(AtrPeriod);
@@ -224,6 +236,66 @@ namespace PowerLanguage.Strategy
             }
             DrawOpen(t);
         }
+
+        // ---- Algo = FAST_TP (tz-ticks.md, шаг 3) ----
+        // На последнем закрытом баре (конец истории, затем каждый час) лента сделок читается заново и считается целиком:
+        // так история и реальное время считаются одним кодом (ядро CoreTicks.cs, то же, что прогон src/lra/ticks).
+        // Время ленты — время графика 1 Tick; часовой график должен быть в том же поясе (Exchange).
+        // ponytail: полный пересчёт раз в час (~1–2 с на месяц тиков); инкрементальный — если лента вырастет в разы
+        private const string FastTradesHeader = "CloseTime,ParisTime,Symbol,Crowd,EntryTime,EntryParis,Dir,Entry,SL,TP,ExitTime,Exit,Reason,Pips,Usd,Source,Version";
+        private const string FastSignalsHeader = "Time,ParisTime,Symbol,Crowd,GrowthStart,Trades,Weight,Prices,ZoneLo,ZoneHi,H0,Target,Taken,SkipReason,Source,Version";
+        private void CalcFast(DateTime now)
+        {
+            string path = Path.Combine(TicksDir, _sym + "_TRADES.csv");
+            if (!File.Exists(path)) { if (!_noTicks) RunEvent("NO_TICKS " + path); _noTicks = true; return; }
+            List<LraTicks.Ev> evs = new LraTicks(_s.Tick).FastTp(LraTicks.Load(path), _h);
+            string src = Environment.IsRealTimeCalc ? "LIVE" : "HIST";
+            foreach (LraTicks.Ev e in evs)
+            {
+                DateTime tf = new DateTime(e.TFirst);
+                if (_fastSignals.Add(e.TFirst * 2 + (e.Side > 0 ? 1 : 0)))
+                    _csv.Write("signals_fast_" + _sym + ".csv", FastSignalsHeader, tf, string.Format(CI,
+                        "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4:yyyy-MM-dd HH:mm},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15}",
+                        tf, ToParis(tf), _sym, e.Side > 0 ? "BUY" : "SELL", new DateTime(e.TS), e.Trades, F(e.Weight), e.Prices,
+                        F(e.ZoneLo), F(e.ZoneHi), F(e.H0), F(e.Target), e.Skip == "" ? 1 : 0, e.Skip, src, Version));
+                if (e.Skip != "") continue;
+                FastMarks m;
+                DateTime te = new DateTime(e.TEntry), bar = BarOf(te);
+                if (!_fast.TryGetValue(e.TEntry, out m))
+                {
+                    int dir = e.Side;   // вместе с толпой
+                    IArrowObject ar = DrwArrow.Create(new ChartPoint(bar, e.Entry), dir < 0);
+                    ar.Color = dir > 0 ? Color.Blue : Color.Magenta;
+                    ar.Text = "F";
+                    _fast[e.TEntry] = m = new FastMarks
+                    {
+                        Entry = Line(new ChartPoint(bar, e.Entry), new ChartPoint(now, e.Entry), Color.DimGray, ETLStyle.ToolSolid),
+                        Sl = Line(new ChartPoint(bar, e.SL), new ChartPoint(now, e.SL), Color.Red, ETLStyle.ToolSolid),
+                        Tp = Line(new ChartPoint(bar, e.TP), new ChartPoint(now, e.TP), Color.Green, ETLStyle.ToolSolid)
+                    };
+                    Label(new ChartPoint(bar, e.SL), "SL", Color.Red);
+                    Label(new ChartPoint(bar, e.TP), "TP", Color.Green);
+                }
+                if (m.Done) continue;
+                DateTime end = e.Reason == "OPEN" ? now : BarOf(new DateTime(e.TExit));
+                m.Entry.End = new ChartPoint(end, e.Entry); m.Sl.End = new ChartPoint(end, e.SL); m.Tp.End = new ChartPoint(end, e.TP);
+                if (e.Reason == "OPEN") continue;
+                m.Done = true;
+                double pips = Math.Round(e.Pips, 1);
+                Color c = pips > 0 ? Color.Green : pips < 0 ? Color.Red : Color.Gray;
+                Line(new ChartPoint(bar, e.Entry), new ChartPoint(end, e.Exit), c, ETLStyle.ToolDotted);
+                ITextObject tx = DrwText.Create(new ChartPoint(end, e.Exit), string.Format(CI, " {0} {1:+0;-0;0} п.", e.Reason, pips));
+                tx.Color = c; tx.HStyle = ETextStyleH.Right; tx.VStyle = ETextStyleV.Center;
+                DateTime tx0 = new DateTime(e.TExit);
+                _csv.Write("trades_fast.csv", FastTradesHeader, tx0, string.Format(CI,
+                    "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4:yyyy-MM-dd HH:mm},{5:yyyy-MM-dd HH:mm},{6},{7},{8},{9},{10:yyyy-MM-dd HH:mm},{11},{12},{13},{14},{15},{16}",
+                    tx0, ToParis(tx0), _sym, e.Side > 0 ? "BUY" : "SELL", te, ToParis(te), e.Side, F(e.Entry), F(e.SL), F(e.TP),
+                    tx0, F(e.Exit), e.Reason, F(pips), F(e.Pips * PipSize * Bars.Info.BigPointValue - CommissionUsd), src, Version));
+            }
+        }
+
+        // Часовой бар, в который попала сделка ленты: время бара — его закрытие
+        private static DateTime BarOf(DateTime t) { return t.Date.AddHours(t.Hour + 1); }
 
         // ---- Сделки на графике: линии входа (серая), стопа (красная), тейка (зелёная) тянутся, пока часть открыта;
         // у начала линий подписи SL, TP1, TP2; на выходе — пунктир от входа к цене выхода и подпись «причина ±пункты»
@@ -300,7 +372,7 @@ namespace PowerLanguage.Strategy
         // ponytail: опрос раз в 2 с, не больше 60 раз; дальше — ручной Status Off/On
         private bool VpReady()
         {
-            bool ready = HasProfiles(this.VolumeProfile) && HasProfiles(Vp2());
+            bool ready = HasProfiles(this.VolumeProfile) && (Algo == "FAST_TP" || HasProfiles(Vp2()));
             if (!ready)
             {
                 _vpWaiting = true;

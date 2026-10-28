@@ -487,6 +487,290 @@ namespace PowerLanguage.Strategy
     }
 }
 
+// ---- CoreTicks.cs ----
+// Ядро анализа тиков (tz-ticks.md, шаги 2–3): события «толпа набирает» по ленте сделок <символ>_TRADES.csv
+// и модели сделок. Общее для прогона src/lra/ticks/Ticks.cs и советника LraTrader (Algo = FAST_TP).
+// Описано для «толпа покупает» (d = +1); «продаёт» (d = -1) — зеркально через d.
+
+namespace PowerLanguage.Strategy
+{
+    public class LraTicks
+    {
+        static readonly CultureInfo CI = CultureInfo.InvariantCulture;
+        public readonly double Tick;   // цена тика инструмента
+        public LraTicks(double tick) { Tick = tick; }
+
+        // Пороги шага 2 (ТЗ, по умолчанию)
+        public static readonly TimeSpan Lookback = TimeSpan.FromHours(12), MinGrowth = TimeSpan.FromMinutes(30),
+            PreHour = TimeSpan.FromHours(1), Step = TimeSpan.FromMinutes(5);
+        public const double W = 0.2, PriceShare = 0.6, MaxOnePrice = 0.5, VolConflict = 0.05;
+        public const int MinPrices = 3, MinTradesAtPrice = 20, SmallSize = 3;
+        // Модель сделки (шаг 3)
+        public const double MaxTakePips = 15, MaxStopPips = 30, ReturnPips = 10, Pip = 0.0001;
+        public static readonly TimeSpan Hold = TimeSpan.FromHours(48);
+
+        // Сделки одного варианта: время (Ticks), цена, контракты, направление
+        public class Tape { public long[] T; public double[] P; public int[] S; public sbyte[] D; public int N; }
+
+        public class Ev
+        {
+            public int Side, S, Prices, Trades, Small; public long TS, TFirst, TLast;
+            public double H0, Weight, ZoneLo, ZoneHi, Zone;  // Zone — перекос зоны в сделках (в сторону толпы)
+            public HashSet<long> ZoneKeys;
+            // шаг 3
+            public double Target = double.NaN; public long TTarget, TCancel, TReturn, TClose50, TClose100; public string First = "";
+            public double MaxFav, MaxAdv, Entry;
+            // сделка
+            public string Skip = ""; public double SL, TP, Exit, Pips; public string Reason = ""; public long TExit, TEntry; public bool Added;
+        }
+
+
+        // ---------- загрузка ----------
+        public static Tape Load(string path)
+        {
+            var t = new List<long>(); var p = new List<double>(); var s = new List<int>(); var d = new List<sbyte>();
+            // TickRecorder держит файл открытым на запись — читать с FileShare.ReadWrite
+            var lines = new List<string>();
+            using (var r = new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
+                for (string l; (l = r.ReadLine()) != null;) lines.Add(l);
+            foreach (string l in lines.Skip(1))
+            {
+                var f = l.Split(',');
+                if (f.Length < 4) continue;   // недописанная последняя строка
+                t.Add(DateTime.ParseExact(f[0], "yyyy-MM-dd HH:mm:ss.fff", CI).Ticks);
+                p.Add(double.Parse(f[1], CI)); s.Add((int)double.Parse(f[2], CI)); d.Add(sbyte.Parse(f[3], CI));
+            }
+            return new Tape { T = t.ToArray(), P = p.ToArray(), S = s.ToArray(), D = d.ToArray(), N = t.Count };
+        }
+
+        // Вариант G: подряд идущие исполнения с одним временем, направлением и ценой — одна сделка
+        public static Tape Group(Tape a)
+        {
+            var t = new List<long>(); var p = new List<double>(); var s = new List<int>(); var d = new List<sbyte>();
+            for (int i = 0; i < a.N; i++)
+            {
+                int k = t.Count - 1;
+                if (k >= 0 && t[k] == a.T[i] && d[k] == a.D[i] && p[k] == a.P[i]) { s[k] += a.S[i]; continue; }
+                t.Add(a.T[i]); p.Add(a.P[i]); s.Add(a.S[i]); d.Add(a.D[i]);
+            }
+            return new Tape { T = t.ToArray(), P = p.ToArray(), S = s.ToArray(), D = d.ToArray(), N = t.Count };
+        }
+
+        public long Key(double price) { return (long)Math.Round(price / Tick); }
+
+        // ---------- шаг 2 ----------
+        public List<Ev> Detect(Tape a, List<LraBar> hours)
+        {
+            var c = new int[a.N];   // кумулятивная дельта по количеству сделок после сделки i
+            for (int i = 0; i < a.N; i++) c[i] = (i > 0 ? c[i - 1] : 0) + a.D[i];
+            var evs = new Dictionary<long, Ev>();
+            int e = -1, lo = 0, hi = -1;
+            long t = new DateTime(a.T[0]).Date.AddHours(new DateTime(a.T[0]).Hour + 1).Ticks + Lookback.Ticks;
+            for (; t <= a.T[a.N - 1]; t += Step.Ticks)
+            {
+                int e0 = e;
+                while (e + 1 < a.N && a.T[e + 1] < t) e++;
+                if (e == e0) continue;                                   // за 5 минут сделок не было (выходные)
+                while (lo < a.N && a.T[lo] < t - Lookback.Ticks) lo++;
+                while (hi + 1 < a.N && a.T[hi + 1] <= t - MinGrowth.Ticks) hi++;
+                if (hi < lo) continue;
+                foreach (int d in new[] { 1, -1 })
+                {
+                    int s = lo;                                          // начало роста: минимум (d=+1) / максимум дельты
+                    for (int k = lo; k <= hi; k++) if (d * c[k] < d * c[s]) s = k;
+                    int n = e - s;
+                    if (n <= 0 || d * (c[e] - c[s]) < W * n) continue;  // вес
+                    double h0 = a.P[s];                                  // хай (лоу) за час до начала роста
+                    for (int k = s; k >= 0 && a.T[k] >= a.T[s] - PreHour.Ticks; k--) if (d * a.P[k] > d * h0) h0 = a.P[k];
+                    bool broke = false;
+                    for (int k = s + 1; k <= e && !broke; k++) if (d * a.P[k] > d * h0) broke = true;
+                    if (broke) continue;                                 // цена вышла за H0 — не «стоит»
+                    var at = new Dictionary<long, int[]>();              // цена -> {вверх, вниз}
+                    int small = 0;
+                    for (int k = s + 1; k <= e; k++)
+                    {
+                        int[] x; long key = Key(a.P[k]);
+                        if (!at.TryGetValue(key, out x)) at[key] = x = new int[2];
+                        x[a.D[k] > 0 ? 0 : 1]++;
+                        if (a.S[k] <= SmallSize && a.D[k] == d) small++;
+                    }
+                    var zone = at.Where(kv => kv.Value[0] + kv.Value[1] >= MinTradesAtPrice &&
+                        (double)(d > 0 ? kv.Value[0] : kv.Value[1]) / (kv.Value[0] + kv.Value[1]) >= PriceShare).ToList();
+                    if (zone.Count < MinPrices) continue;                // несколько цен
+                    double total = d * (c[e] - c[s]);
+                    double top = at.Values.Max(x => d * (x[0] - x[1]));
+                    if (top > MaxOnePrice * total) continue;             // не одна цена
+                    if (VolAgainst(hours, a.T[s], t, d)) continue;       // объём против
+                    long id = d * ((long)s + 1);
+                    Ev ev;
+                    if (!evs.TryGetValue(id, out ev))
+                        evs[id] = ev = new Ev { Side = d, S = s, TS = a.T[s], TFirst = t, H0 = h0,
+                            ZoneKeys = new HashSet<long>(zone.Select(z => z.Key)),
+                            ZoneLo = zone.Min(z => z.Key) * Tick, ZoneHi = zone.Max(z => z.Key) * Tick,
+                            Zone = zone.Sum(z => d * (z.Value[0] - z.Value[1])), Prices = zone.Count, Trades = n,
+                            Weight = total / n, Small = small };
+                    ev.TLast = t;
+                }
+            }
+            return evs.Values.OrderBy(x => x.TFirst).ToList();
+        }
+
+        // Дельта по объёму (Ask-Bid) по закрытым часам внутри [s, t] против толпы на VolConflict и больше
+        public static bool VolAgainst(List<LraBar> hours, long s, long t, int d)
+        {
+            double ask = 0, bid = 0;
+            foreach (LraBar b in hours)
+                if (b.Time.Ticks - TimeSpan.TicksPerHour >= s && b.Time.Ticks <= t) { ask += b.Ask; bid += b.Bid; }
+            return ask + bid > 0 && -d * (ask - bid) / (ask + bid) >= VolConflict;
+        }
+
+        // ---------- шаг 3: что было дальше ----------
+        public void Follow(Tape a, List<LraBar> hours, Ev e)
+        {
+            var s = new LraSettings { Tick = Tick, FractalBars = 2 };
+            var closed = hours.Where(b => b.Time.Ticks <= e.TFirst).ToList();
+            // цель — ближайший фрактал часовика за зоной в сторону от толпы (там стопы толпы)
+            e.Target = LraLevels.Nearest(closed, -e.Side, e.Side > 0 ? e.ZoneLo : e.ZoneHi, s);
+            int i = Array.BinarySearch(a.T, e.TFirst); if (i < 0) i = ~i;
+            if (i >= a.N) { e.Skip = "NO_DATA"; return; }
+            e.Entry = a.P[i];
+            double cancel = e.H0 + e.Side * Tick;
+            bool away = false; double closedSum = 0;
+            for (int k = i; k < a.N && a.T[k] <= e.TFirst + Hold.Ticks; k++)
+            {
+                double p = a.P[k]; long t = a.T[k];
+                e.MaxFav = Math.Max(e.MaxFav, -e.Side * (p - e.Entry) / Pip);
+                e.MaxAdv = Math.Max(e.MaxAdv, e.Side * (p - e.Entry) / Pip);
+                if (e.TTarget == 0 && !double.IsNaN(e.Target) && -e.Side * (p - e.Target) >= 0) Mark(e, ref e.TTarget, t, "TARGET");
+                if (e.TCancel == 0 && e.Side * (p - cancel) >= 0) Mark(e, ref e.TCancel, t, "CANCEL");
+                double edge = e.Side > 0 ? e.ZoneLo : e.ZoneHi;
+                if (!away && -e.Side * (p - edge) >= ReturnPips * Pip) away = true;
+                if (away && e.TReturn == 0 && e.Side * (p - edge) >= 0) Mark(e, ref e.TReturn, t, "RETURN");
+                if (e.ZoneKeys.Contains(Key(p))) closedSum += -e.Side * a.D[k];   // встречные минус попутные на ценах зоны
+                if (e.TClose50 == 0 && closedSum >= 0.5 * e.Zone) Mark(e, ref e.TClose50, t, "CLOSE50");
+                if (e.TClose100 == 0 && closedSum >= e.Zone) Mark(e, ref e.TClose100, t, "CLOSE100");
+            }
+        }
+
+        // Сделка против толпы. Стоп (mode): H0 — хай (лоу) за час до начала роста; FRACTAL — ближайший фрактал часовика
+        // за H0 (В1 01:15:41); DAY — хай (лоу) торгового дня с 17:00 Чикаго, не ближе H0 (В4 03:48–04:07). Всё + 1 тик.
+        // add — сценарий B (В1 01:16:15–01:18:51): цена ушла против нас на AddPips, а встречных сделок с входа не больше,
+        // чем сделок толпы, — добавляем 1 контракт; тейк обоих — возврат к краю зоны со стороны цены.
+        public const double AddPips = 10;
+        public static readonly TimeSpan FastSet = TimeSpan.FromMinutes(35), FastHold = TimeSpan.FromHours(24);
+        public void Trade(Tape a, List<LraBar> hours, Ev e, string mode, bool add)
+        {
+            e.Skip = e.Reason = ""; e.Pips = 0; e.TExit = 0; e.Added = false;
+            int i = Array.BinarySearch(a.T, e.TFirst); if (i < 0) i = ~i;
+            if (i >= a.N) { e.Skip = "NO_DATA"; return; }
+            e.Entry = a.P[i]; e.TEntry = a.T[i];
+            // SWEEP — вместе с толпой после выноса её стопов (вариант пользователя, 2026-10-28): цена дошла до уровня стопов
+            // толпы (цель), потом вернулась к краю зоны набора — вход; стоп за крайней ценой выноса + 1 тик; выход через 24 ч.
+            // Выноса и возврата ждём FastHold. SWEEP — только быстрый набор (FastSet), SWEEP_ALL — все события.
+            if (mode.StartsWith("SWEEP"))
+            {
+                if (mode == "SWEEP" && e.TFirst - e.TS > FastSet.Ticks) { e.Skip = "SLOW"; return; }
+                if (double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
+                int d = e.Side, j = -1;
+                double ext = double.NaN, near = d > 0 ? e.ZoneLo : e.ZoneHi;
+                for (int k = i; k < a.N && a.T[k] <= e.TFirst + FastHold.Ticks; k++)
+                {
+                    if (double.IsNaN(ext)) { if (-d * (a.P[k] - e.Target) >= 0) ext = a.P[k]; continue; }
+                    if (-d * (a.P[k] - ext) > 0) ext = a.P[k];
+                    if (d * (a.P[k] - near) >= 0) { j = k; break; }
+                }
+                if (j < 0) { e.Skip = double.IsNaN(ext) ? "NO_SWEEP" : "NO_RETURN"; return; }
+                e.Entry = a.P[j]; e.TEntry = a.T[j]; e.SL = ext - d * Tick; e.TP = double.NaN;
+                if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) { e.Skip = "FAR_STOP"; return; }
+                e.Reason = "TIME"; int lastK = j;
+                for (int k = j; k < a.N && a.T[k] <= e.TEntry + FastHold.Ticks; k++)
+                {
+                    lastK = k;
+                    if (d * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
+                }
+                if (e.Reason == "TIME") { e.Exit = a.P[lastK]; e.TExit = a.T[lastK]; }
+                e.Pips = d * (e.Exit - e.Entry) / Pip;
+                return;
+            }
+            // WITH — вместе с толпой: стоп за уровнем стопов толпы (цель сделки против неё), тейк 15 п.
+            // FAST — только быстрый набор (событие не позже FastSet от начала роста), вместе с толпой, без стопа и тейка,
+            // выход через 24 ч; FAST_SL — то же со стопом за уровнем стопов толпы (tz-ticks.md, поиск закономерностей);
+            // FAST_TP — FAST_SL + тейк на ближайшем фрактале часовика по ходу сделки (за входом).
+            bool fast = mode.StartsWith("FAST");
+            if (fast && e.TFirst - e.TS > FastSet.Ticks) { e.Skip = "SLOW"; return; }
+            int dir = mode == "WITH" || fast ? e.Side : -e.Side;
+            if (mode == "FAST") e.SL = e.Entry - dir * 1.0;   // недостижимо
+            else if (mode == "WITH" || mode == "FAST_SL" || mode == "FAST_TP") e.SL = e.Target;
+            else if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
+            else if (mode == "FRACTAL")
+                e.SL = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), e.Side, e.H0,
+                    new LraSettings { Tick = Tick, FractalBars = 2 });
+            else
+            {
+                DateTime t0 = new DateTime(e.TFirst), day = t0.Date.AddHours(17);
+                if (day > t0) day = day.AddDays(-1);
+                double ext = e.H0;
+                for (int k = i - 1; k >= 0 && a.T[k] >= day.Ticks; k--) if (e.Side * a.P[k] > e.Side * ext) ext = a.P[k];
+                e.SL = ext + e.Side * Tick;
+            }
+            if (double.IsNaN(e.SL)) { e.Skip = "NO_STOP"; return; }
+            if (mode != "FAST" && double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
+            if (mode == "FAST_TP")
+            {
+                e.TP = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), dir, e.Entry,
+                    new LraSettings { Tick = Tick, FractalBars = 2 });
+                if (double.IsNaN(e.TP)) { e.Skip = "NO_TP"; return; }
+            }
+            else e.TP = fast ? e.Entry + dir * 1.0 : mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
+            if (dir * (e.TP - e.Entry) <= 0) e.Skip = "TP_PASSED";
+            else if (dir * (e.Entry - e.SL) <= 0) e.Skip = "SL_PASSED";
+            else if (mode != "FAST" && Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
+            if (e.Skip != "") return;
+            e.Reason = "TIME";
+            double tp = e.TP, addAt = e.Entry - dir * AddPips * Pip, edge = e.Side > 0 ? e.ZoneHi : e.ZoneLo;
+            int flow = 0, last = i;   // сделки толпы минус встречные с момента входа
+            for (int k = i; k < a.N && a.T[k] <= e.TFirst + (fast ? FastHold : Hold).Ticks; k++)
+            {
+                last = k; flow += e.Side * a.D[k];
+                if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
+                if (dir * (a.P[k] - tp) >= 0) { e.Reason = "TP"; e.Exit = tp; e.TExit = a.T[k]; break; }
+                if (add && !e.Added && dir * (a.P[k] - addAt) <= 0 && flow >= 0 && dir * (addAt - e.SL) > 0)
+                { e.Added = true; tp = dir * (edge - addAt) > 0 ? edge : e.Entry; }
+            }
+            if (e.Reason == "TIME") { e.Exit = a.P[last]; e.TExit = a.T[last]; }
+            // лента кончилась раньше срока выхода — сделка ещё открыта; Pips — по последней цене
+            if (e.Reason == "TIME" && a.T[a.N - 1] < e.TFirst + (fast ? FastHold : Hold).Ticks) e.Reason = "OPEN";
+            e.Pips = dir * (e.Exit - e.Entry) / Pip + (e.Added ? dir * (e.Exit - addAt) / Pip : 0);
+        }
+
+        public static void Mark(Ev e, ref long field, long t, string name) { field = t; if (e.First == "") e.First = name; }
+
+        // Одна позиция на символ: событие во время открытой сделки — пропуск
+        public static void Simulate(List<Ev> evs)
+        {
+            long busy = 0;
+            foreach (Ev e in evs)
+            {
+                if (e.Skip != "") continue;
+                if (e.TEntry < busy) { e.Skip = "IN_POSITION"; continue; }
+                busy = e.TExit;
+            }
+        }
+
+        // Советник LraTrader, Algo = FAST_TP: события по ленте сделок (вариант F — каждое исполнение) и сделка FAST_TP
+        // (tz-ticks.md, шаг 3): быстрый набор — вместе с толпой, стоп за уровнем стопов толпы, тейк на ближайшем фрактале.
+        public List<Ev> FastTp(Tape a, List<LraBar> hours)
+        {
+            if (a.N == 0) return new List<Ev>();
+            List<Ev> evs = Detect(a, hours);
+            foreach (Ev e in evs) { Follow(a, hours, e); Trade(a, hours, e, "FAST_TP", false); }
+            Simulate(evs);
+            return evs;
+        }
+
+    }
+}
+
 // ---- CoreTypes.cs ----
 
 // Типы ядра LraTrader. Контракт между файлами — менять только по согласованию (interfaces.md).
@@ -593,6 +877,8 @@ namespace PowerLanguage.Strategy
     public class LraTrader : SignalObject
     {
         // ---- Параметры (ТЗ §9) ----
+        [Input] public string Algo            { get; set; }  // FAST_TP — по тикам (tz-ticks.md); LRA — прежний, по часовым профилям
+        [Input] public string TicksDir        { get; set; }  // FAST_TP: папка <символ>_TRADES.csv (TickRecorder)
         [Input] public string CrowdMode       { get; set; }  // CUM | WINDOW
         [Input] public int    CumLookback     { get; set; }
         [Input] public double CumWeight       { get; set; }
@@ -635,6 +921,10 @@ namespace PowerLanguage.Strategy
         private class UnitMarks { public ITrendLineObject Entry, Tp; public ITextObject TpLabel; }
         private readonly Dictionary<LraUnit, UnitMarks> _unitLines = new Dictionary<LraUnit, UnitMarks>();
         private readonly Dictionary<LraPosition, ITrendLineObject> _slLines = new Dictionary<LraPosition, ITrendLineObject>();
+        private class FastMarks { public ITrendLineObject Entry, Sl, Tp; public bool Done; }
+        private readonly Dictionary<long, FastMarks> _fast = new Dictionary<long, FastMarks>();  // TEntry -> линии сделки
+        private readonly HashSet<long> _fastSignals = new HashSet<long>();
+        private bool _noTicks;
         private bool _vpWaiting;
         private int _vpPolls;
 
@@ -644,6 +934,8 @@ namespace PowerLanguage.Strategy
 
         public LraTrader(object ctx) : base(ctx)
         {
+            Algo            = "FAST_TP";
+            TicksDir        = @"D:\TradeLog\Bars";
             CrowdMode       = "CUM";
             CumLookback     = 12;
             CumWeight       = 0.05;
@@ -711,14 +1003,17 @@ namespace PowerLanguage.Strategy
             _pos.Clear();
             _unitLines.Clear();
             _slLines.Clear();
+            _fast.Clear();
+            _fastSignals.Clear();
+            _noTicks = false;
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
-                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26} CrowdMode={28} CumLookback={29} CumWeight={30}",
+                string.Format(CI, "{0:yyyy-MM-dd HH:mm:ss},START,{1},{2},Algo={31} TicksDir={32} ImbBars={3} MinShare={4} LevelImbPct={5} MinLevels={6} MaxRangePips={7} MinRangeBars={8} MinActiveBars={9} MaxRangeAgeBars={10} SwingLookback={11} OffsetTicks={12} FractalBars={27} AtrPeriod={13} StallAtr={14} StrongAtr={15} MaxStopPips={16} MaxTakePips={17} AddStepPips={18} AddTargetMode={19} LraMinDistPips={20} DayTargetShare={21} Pip={22} Comm={23} News={24} TZ={25} Tick={26} CrowdMode={28} CumLookback={29} CumWeight={30}",
                     DateTime.Now, _sym, Version, ImbBars, MinShare, LevelImbPct, MinLevels, MaxRangePips, MinRangeBars,
                     MinActiveBars, MaxRangeAgeBars, SwingLookback, OffsetTicks, AtrPeriod, StallAtr, StrongAtr,
                     MaxStopPips, MaxTakePips, AddStepPips, AddTargetMode, LraMinDistPips, DayTargetShare, PipSize,
-                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars, CrowdMode, CumLookback, CumWeight));
+                    CommissionUsd, NewsWindows, Bars.Info.TimeZone, _s.Tick, FractalBars, CrowdMode, CumLookback, CumWeight, Algo, TicksDir));
         }
 
         protected override void StopCalc()
@@ -743,6 +1038,7 @@ namespace PowerLanguage.Strategy
             };
             FillProfile(b);
             _h.Add(b);
+            if (Algo == "FAST_TP") { if (Bars.LastBarOnChart) CalcFast(t); return; }
 
             // ---- Сопровождение позиций (ТЗ §7, §8) ----
             double atr = this.AverageTrueRange(AtrPeriod);
@@ -805,6 +1101,66 @@ namespace PowerLanguage.Strategy
             }
             DrawOpen(t);
         }
+
+        // ---- Algo = FAST_TP (tz-ticks.md, шаг 3) ----
+        // На последнем закрытом баре (конец истории, затем каждый час) лента сделок читается заново и считается целиком:
+        // так история и реальное время считаются одним кодом (ядро CoreTicks.cs, то же, что прогон src/lra/ticks).
+        // Время ленты — время графика 1 Tick; часовой график должен быть в том же поясе (Exchange).
+        // ponytail: полный пересчёт раз в час (~1–2 с на месяц тиков); инкрементальный — если лента вырастет в разы
+        private const string FastTradesHeader = "CloseTime,ParisTime,Symbol,Crowd,EntryTime,EntryParis,Dir,Entry,SL,TP,ExitTime,Exit,Reason,Pips,Usd,Source,Version";
+        private const string FastSignalsHeader = "Time,ParisTime,Symbol,Crowd,GrowthStart,Trades,Weight,Prices,ZoneLo,ZoneHi,H0,Target,Taken,SkipReason,Source,Version";
+        private void CalcFast(DateTime now)
+        {
+            string path = Path.Combine(TicksDir, _sym + "_TRADES.csv");
+            if (!File.Exists(path)) { if (!_noTicks) RunEvent("NO_TICKS " + path); _noTicks = true; return; }
+            List<LraTicks.Ev> evs = new LraTicks(_s.Tick).FastTp(LraTicks.Load(path), _h);
+            string src = Environment.IsRealTimeCalc ? "LIVE" : "HIST";
+            foreach (LraTicks.Ev e in evs)
+            {
+                DateTime tf = new DateTime(e.TFirst);
+                if (_fastSignals.Add(e.TFirst * 2 + (e.Side > 0 ? 1 : 0)))
+                    _csv.Write("signals_fast_" + _sym + ".csv", FastSignalsHeader, tf, string.Format(CI,
+                        "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4:yyyy-MM-dd HH:mm},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15}",
+                        tf, ToParis(tf), _sym, e.Side > 0 ? "BUY" : "SELL", new DateTime(e.TS), e.Trades, F(e.Weight), e.Prices,
+                        F(e.ZoneLo), F(e.ZoneHi), F(e.H0), F(e.Target), e.Skip == "" ? 1 : 0, e.Skip, src, Version));
+                if (e.Skip != "") continue;
+                FastMarks m;
+                DateTime te = new DateTime(e.TEntry), bar = BarOf(te);
+                if (!_fast.TryGetValue(e.TEntry, out m))
+                {
+                    int dir = e.Side;   // вместе с толпой
+                    IArrowObject ar = DrwArrow.Create(new ChartPoint(bar, e.Entry), dir < 0);
+                    ar.Color = dir > 0 ? Color.Blue : Color.Magenta;
+                    ar.Text = "F";
+                    _fast[e.TEntry] = m = new FastMarks
+                    {
+                        Entry = Line(new ChartPoint(bar, e.Entry), new ChartPoint(now, e.Entry), Color.DimGray, ETLStyle.ToolSolid),
+                        Sl = Line(new ChartPoint(bar, e.SL), new ChartPoint(now, e.SL), Color.Red, ETLStyle.ToolSolid),
+                        Tp = Line(new ChartPoint(bar, e.TP), new ChartPoint(now, e.TP), Color.Green, ETLStyle.ToolSolid)
+                    };
+                    Label(new ChartPoint(bar, e.SL), "SL", Color.Red);
+                    Label(new ChartPoint(bar, e.TP), "TP", Color.Green);
+                }
+                if (m.Done) continue;
+                DateTime end = e.Reason == "OPEN" ? now : BarOf(new DateTime(e.TExit));
+                m.Entry.End = new ChartPoint(end, e.Entry); m.Sl.End = new ChartPoint(end, e.SL); m.Tp.End = new ChartPoint(end, e.TP);
+                if (e.Reason == "OPEN") continue;
+                m.Done = true;
+                double pips = Math.Round(e.Pips, 1);
+                Color c = pips > 0 ? Color.Green : pips < 0 ? Color.Red : Color.Gray;
+                Line(new ChartPoint(bar, e.Entry), new ChartPoint(end, e.Exit), c, ETLStyle.ToolDotted);
+                ITextObject tx = DrwText.Create(new ChartPoint(end, e.Exit), string.Format(CI, " {0} {1:+0;-0;0} п.", e.Reason, pips));
+                tx.Color = c; tx.HStyle = ETextStyleH.Right; tx.VStyle = ETextStyleV.Center;
+                DateTime tx0 = new DateTime(e.TExit);
+                _csv.Write("trades_fast.csv", FastTradesHeader, tx0, string.Format(CI,
+                    "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4:yyyy-MM-dd HH:mm},{5:yyyy-MM-dd HH:mm},{6},{7},{8},{9},{10:yyyy-MM-dd HH:mm},{11},{12},{13},{14},{15},{16}",
+                    tx0, ToParis(tx0), _sym, e.Side > 0 ? "BUY" : "SELL", te, ToParis(te), e.Side, F(e.Entry), F(e.SL), F(e.TP),
+                    tx0, F(e.Exit), e.Reason, F(pips), F(e.Pips * PipSize * Bars.Info.BigPointValue - CommissionUsd), src, Version));
+            }
+        }
+
+        // Часовой бар, в который попала сделка ленты: время бара — его закрытие
+        private static DateTime BarOf(DateTime t) { return t.Date.AddHours(t.Hour + 1); }
 
         // ---- Сделки на графике: линии входа (серая), стопа (красная), тейка (зелёная) тянутся, пока часть открыта;
         // у начала линий подписи SL, TP1, TP2; на выходе — пунктир от входа к цене выхода и подпись «причина ±пункты»
@@ -881,7 +1237,7 @@ namespace PowerLanguage.Strategy
         // ponytail: опрос раз в 2 с, не больше 60 раз; дальше — ручной Status Off/On
         private bool VpReady()
         {
-            bool ready = HasProfiles(this.VolumeProfile) && HasProfiles(Vp2());
+            bool ready = HasProfiles(this.VolumeProfile) && (Algo == "FAST_TP" || HasProfiles(Vp2()));
             if (!ready)
             {
                 _vpWaiting = true;
