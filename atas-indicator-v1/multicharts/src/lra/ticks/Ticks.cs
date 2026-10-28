@@ -58,10 +58,10 @@ namespace PowerLanguage.Strategy
                     List<Ev> evs = Detect(v.Item2, hours);
                     foreach (Ev e in evs) Follow(v.Item2, hours, e);
                     Summary(sum, sym, v.Item1, v.Item2, evs);
-                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH" })
+                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH", "FAST", "FAST_SL" })
                         foreach (bool add in new[] { false, true })
                         {
-                            if (mode == "WITH" && add) continue;
+                            if ((mode == "WITH" || mode.StartsWith("FAST")) && add) continue;
                             foreach (Ev e in evs) Trade(v.Item2, hours, e, mode, add);
                             Simulate(evs);
                             string name = v.Item1 + "_" + mode + (add ? "_ADD" : "");
@@ -219,14 +219,20 @@ namespace PowerLanguage.Strategy
         // add — сценарий B (В1 01:16:15–01:18:51): цена ушла против нас на AddPips, а встречных сделок с входа не больше,
         // чем сделок толпы, — добавляем 1 контракт; тейк обоих — возврат к краю зоны со стороны цены.
         const double AddPips = 10;
+        static readonly TimeSpan FastSet = TimeSpan.FromMinutes(35), FastHold = TimeSpan.FromHours(24);
         static void Trade(Tape a, List<LraBar> hours, Ev e, string mode, bool add)
         {
             e.Skip = e.Reason = ""; e.Pips = 0; e.TExit = 0; e.Added = false;
             int i = Array.BinarySearch(a.T, e.TFirst); if (i < 0) i = ~i;
             if (i >= a.N) { e.Skip = "NO_DATA"; return; }
             // WITH — вместе с толпой: стоп за уровнем стопов толпы (цель сделки против неё), тейк 15 п.
-            int dir = mode == "WITH" ? e.Side : -e.Side;
-            if (mode == "WITH") e.SL = e.Target;
+            // FAST — только быстрый набор (событие не позже FastSet от начала роста), вместе с толпой, без стопа и тейка,
+            // выход через 24 ч; FAST_SL — то же со стопом за уровнем стопов толпы (tz-ticks.md, поиск закономерностей).
+            bool fast = mode.StartsWith("FAST");
+            if (fast && e.TFirst - e.TS > FastSet.Ticks) { e.Skip = "SLOW"; return; }
+            int dir = mode == "WITH" || fast ? e.Side : -e.Side;
+            if (mode == "FAST") e.SL = e.Entry - dir * 1.0;   // недостижимо
+            else if (mode == "WITH" || mode == "FAST_SL") e.SL = e.Target;
             else if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
             else if (mode == "FRACTAL")
                 e.SL = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), e.Side, e.H0,
@@ -240,16 +246,16 @@ namespace PowerLanguage.Strategy
                 e.SL = ext + e.Side * Tick;
             }
             if (double.IsNaN(e.SL)) { e.Skip = "NO_STOP"; return; }
-            if (double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
-            e.TP = mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
+            if (mode != "FAST" && double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
+            e.TP = fast ? e.Entry + dir * 1.0 : mode == "WITH" || Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
             if (dir * (e.TP - e.Entry) <= 0) e.Skip = "TP_PASSED";
             else if (dir * (e.Entry - e.SL) <= 0) e.Skip = "SL_PASSED";
-            else if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
+            else if (mode != "FAST" && Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
             if (e.Skip != "") return;
             e.Reason = "TIME";
             double tp = e.TP, addAt = e.Entry - dir * AddPips * Pip, edge = e.Side > 0 ? e.ZoneHi : e.ZoneLo;
             int flow = 0, last = i;   // сделки толпы минус встречные с момента входа
-            for (int k = i; k < a.N && a.T[k] <= e.TFirst + Hold.Ticks; k++)
+            for (int k = i; k < a.N && a.T[k] <= e.TFirst + (fast ? FastHold : Hold).Ticks; k++)
             {
                 last = k; flow += e.Side * a.D[k];
                 if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
@@ -319,7 +325,7 @@ namespace PowerLanguage.Strategy
             foreach (Ev e in tr) { eq += e.Pips; peak = Math.Max(peak, eq); dd = Math.Max(dd, peak - eq); }
             o.WriteLine("  стоп {0}: сделки {1} (с добором {2}), плюс {3}, минус {4}, итог {5:0} п., на сделку {6:0.0}, просадка {7:0} п., стоп в среднем {8:0.0} п.; выходы: {9}; пропуски: {10}",
                 name, tr.Count, tr.Count(e => e.Added), tr.Count(e => e.Pips > 0), tr.Count(e => e.Pips < 0), tr.Sum(e => e.Pips),
-                tr.Count > 0 ? tr.Average(e => e.Pips) : 0, dd, tr.Count > 0 ? tr.Average(e => Math.Abs(e.SL - e.Entry) / Pip) : 0,
+                tr.Count > 0 ? tr.Average(e => e.Pips) : 0, dd, tr.Count > 0 ? tr.Average(e => Math.Min(Math.Abs(e.SL - e.Entry) / Pip, 999)) : 0,
                 string.Join(", ", tr.GroupBy(e => e.Reason).Select(g => g.Key + " " + g.Count())),
                 string.Join(", ", evs.Where(e => e.Skip != "").GroupBy(e => e.Skip).Select(g => g.Key + " " + g.Count())));
         }
