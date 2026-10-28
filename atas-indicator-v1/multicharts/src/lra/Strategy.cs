@@ -79,7 +79,8 @@ namespace PowerLanguage.Strategy
         private LraTicks.TapeReader _tape;
         private List<LraTicks.Ev> _evs = new List<LraTicks.Ev>();
         private long _detectStep = -1;
-        private DateTime _lastRefresh;
+        private DateTime _lastRefresh, _lastStatus;
+        private ITextObject _status;   // строка «советник жив» у последнего бара
         private bool _vpWaiting;
         private int _vpPolls;
 
@@ -175,6 +176,7 @@ namespace PowerLanguage.Strategy
             _tape = null;
             _evs = new List<LraTicks.Ev>();
             _detectStep = -1;
+            _status = null;
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
@@ -359,6 +361,23 @@ namespace PowerLanguage.Strategy
             if (_fast.Count != drawn0)   // диагностика: когда и сколько сделок нарисовано
                 RunEvent(string.Format(CI, "FAST_DRAW status={0} rt={1} bar={2:yyyy-MM-dd HH:mm} trades={3}", Bars.Status,
                     Environment.IsRealTimeCalc, now, _fast.Count));
+            Status(a);
+        }
+
+        // Раз в минуту: время проверки, последний тик ленты (оба по часам компьютера) и открытая сделка.
+        // Время перестало меняться при работающей бирже — советник завис.
+        private void Status(LraTicks.Tape a)
+        {
+            if (_status != null && _status.Exist && (DateTime.Now - _lastStatus).TotalSeconds < 60) return;
+            _lastStatus = DateTime.Now;
+            LraTicks.Ev o = _evs.Find(e => e.Skip == "" && e.Reason == "OPEN");
+            string text = string.Format(CI, "LraTrader жив {0:HH:mm} · тики до {1:HH:mm} · сделка: {2}", DateTime.Now,
+                TimeZoneInfo.ConvertTime(new DateTime(a.T[a.N - 1]), _chartTz, TimeZoneInfo.Local),
+                o == null ? "нет" : string.Format(CI, "{0} {1} стоп {2} тейк {3}", o.Side > 0 ? "BUY" : "SELL", F(o.Entry), F(o.SL), F(o.TP)));
+            var at = new ChartPoint(Bars.Time[0], Bars.High[0]);
+            if (_status == null || !_status.Exist) { _status = Label(at, text, Color.DarkOrange); return; }
+            _status.Text = text;
+            _status.Location = at;
         }
 
         // MultiCharts мог стереть рисунки, созданные внутри бара, — тогда рисуем сделку заново
