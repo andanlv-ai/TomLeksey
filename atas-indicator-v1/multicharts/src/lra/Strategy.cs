@@ -14,6 +14,7 @@ using PowerLanguage.VolumeProfile;
 namespace PowerLanguage.Strategy
 {
     [IOGMode(IOGMode.Enabled)]   // FAST_TP: расчёт и внутри бара — сделка рисуется, когда случилась (ордеров нет)
+    [RecoverDrawings(false)]     // иначе MultiCharts стирает рисунки, созданные внутри бара, на каждом следующем тике
     public class LraTrader : SignalObject
     {
         // ---- Параметры (ТЗ §9) ----
@@ -291,6 +292,13 @@ namespace PowerLanguage.Strategy
         private const string FastTradesHeader = "CloseTime,ParisTime,Symbol,Crowd,EntryTime,EntryParis,Dir,Entry,SL,TP,ExitTime,Exit,Reason,Pips,Usd,Source,Version";
         private const string FastSignalsHeader = "Time,ParisTime,Symbol,Crowd,GrowthStart,Trades,Weight,Prices,ZoneLo,ZoneHi,H0,Target,Taken,SkipReason,Source,Version";
         private void CalcFast(DateTime now)
+        {
+            // ошибка останавливает советник молча — пишем её в runs.csv
+            try { CalcFastCore(now); }
+            catch (Exception ex) { RunEvent("FAST_ERROR " + ex.ToString().Replace(',', ';').Replace('\r', ' ').Replace('\n', ' ')); throw; }
+        }
+
+        private void CalcFastCore(DateTime now)
         {
             string path = Path.Combine(TicksDir, _sym + "_TRADES.csv");
             if (!File.Exists(path)) { if (!_noTicks) RunEvent("NO_TICKS " + path); _noTicks = true; return; }

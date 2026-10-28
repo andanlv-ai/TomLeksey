@@ -199,6 +199,8 @@ namespace PowerLanguage.Strategy
         // выходными — исполняются на SlipTicks тиков хуже. Тейк — лимитная заявка, по своей цене. Комиссия — в долларах
         // (советник: CommissionUsd, прогон: pat/halves.py).
         public const int SlipTicks = 1;
+        // Касание стопа/тейка: цены — double (1.3313 + тик ≠ 1.3314 в последнем знаке), сравнение с допуском
+        private const double Eps = 1e-9;
         public static long FridayClose(long t)
         {
             DateTime d = new DateTime(t).Date;
@@ -235,7 +237,7 @@ namespace PowerLanguage.Strategy
                 {
                     lastK = k;
                     if (a.T[k] >= cutS) { e.Reason = "WEEKEND"; e.Exit = a.P[k] - d * SlipTicks * Tick; e.TExit = a.T[k]; break; }
-                    if (d * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL - d * SlipTicks * Tick; e.TExit = a.T[k]; break; }
+                    if (d * (a.P[k] - e.SL) <= Eps) { e.Reason = "SL"; e.Exit = e.SL - d * SlipTicks * Tick; e.TExit = a.T[k]; break; }
                 }
                 if (e.Reason == "TIME") { e.Exit = a.P[lastK] - d * SlipTicks * Tick; e.TExit = a.T[lastK]; }
                 if (e.Reason == "TIME" && a.T[a.N - 1] < Math.Min(e.TEntry + FastHold.Ticks, cutS)) { e.Reason = "OPEN"; e.Exit = a.P[lastK]; }
@@ -286,8 +288,8 @@ namespace PowerLanguage.Strategy
             {
                 last = k; flow += e.Side * a.D[k];
                 if (a.T[k] >= cut) { e.Reason = "WEEKEND"; e.Exit = a.P[k] - dir * SlipTicks * Tick; e.TExit = a.T[k]; break; }
-                if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL - dir * SlipTicks * Tick; e.TExit = a.T[k]; break; }
-                if (dir * (a.P[k] - tp) >= 0) { e.Reason = "TP"; e.Exit = tp; e.TExit = a.T[k]; break; }
+                if (dir * (a.P[k] - e.SL) <= Eps) { e.Reason = "SL"; e.Exit = e.SL - dir * SlipTicks * Tick; e.TExit = a.T[k]; break; }
+                if (dir * (a.P[k] - tp) >= -Eps) { e.Reason = "TP"; e.Exit = tp; e.TExit = a.T[k]; break; }
                 if (add && !e.Added && dir * (a.P[k] - addAt) <= 0 && flow >= 0 && dir * (addAt - e.SL) > 0)
                 { e.Added = true; tp = dir * (edge - addAt) > 0 ? edge : e.Entry; }
             }
@@ -307,7 +309,7 @@ namespace PowerLanguage.Strategy
             {
                 if (e.Skip != "") continue;
                 if (e.TEntry < busy) { e.Skip = "IN_POSITION"; continue; }
-                busy = e.TExit;
+                busy = e.Reason == "OPEN" ? long.MaxValue : e.TExit;   // открытая сделка держит позицию до выхода
             }
         }
 
