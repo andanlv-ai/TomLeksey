@@ -6,6 +6,10 @@ using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Mail;
+using System.Net;
+using System.Text;
+using System.Threading.Tasks;
 using System;
 
 // ---- CoreCsv.cs ----
@@ -936,6 +940,14 @@ namespace PowerLanguage.Strategy
         [Input] public double CommissionUsd   { get; set; }  // за контракт туда и обратно
         [Input] public string LogDir          { get; set; }
         [Input] public string NewsWindows     { get; set; }  // время Парижа, "ЧЧ:ММ-ЧЧ:ММ;..."
+        // Письма об открытии и закрытии сделки FAST_TP — как в DivergenceDetector; пароль только из файла
+        [Input] public bool   EmailEnabled     { get; set; }
+        [Input] public string AlertToEmail     { get; set; }
+        [Input] public string SmtpHost         { get; set; }
+        [Input] public int    SmtpPort         { get; set; }
+        [Input] public bool   SmtpUseSsl       { get; set; }
+        [Input] public string SmtpUser         { get; set; }
+        [Input] public string SmtpPasswordFile { get; set; }
 
         private const string Version = "0.1";
         private static readonly CultureInfo CI = CultureInfo.InvariantCulture;
@@ -955,6 +967,7 @@ namespace PowerLanguage.Strategy
         private readonly Dictionary<long, FastMarks> _fast = new Dictionary<long, FastMarks>();  // TEntry -> линии сделки
         private readonly HashSet<long> _fastSignals = new HashSet<long>();
         private bool _noTicks;
+        private readonly HashSet<long> _mailOpen = new HashSet<long>(), _mailClose = new HashSet<long>();  // TEntry
         private LraTicks _ticks;
         private LraTicks.TapeReader _tape;
         private List<LraTicks.Ev> _evs = new List<LraTicks.Ev>();
@@ -999,6 +1012,13 @@ namespace PowerLanguage.Strategy
             CommissionUsd   = 5;   // решение пользователя, 2026-10-28
             LogDir          = @"D:\TradeLog\LRA";
             NewsWindows     = "14:30-15:30;19:00-21:00";
+            EmailEnabled     = true;
+            AlertToEmail     = "andan@mateos.lv";
+            SmtpHost         = "192.168.1.211";
+            SmtpPort         = 587;
+            SmtpUseSsl       = true;
+            SmtpUser         = "andan@mateos.lv";
+            SmtpPasswordFile = @"C:\Users\user\.smtp_pass";
         }
 
         protected override void StartCalc()
@@ -1041,6 +1061,8 @@ namespace PowerLanguage.Strategy
             _slLines.Clear();
             _fast.Clear();
             _fastSignals.Clear();
+            _mailOpen.Clear();
+            _mailClose.Clear();
             _noTicks = false;
             _ticks = new LraTicks(_s.Tick);
             _tape = null;
@@ -1206,6 +1228,9 @@ namespace PowerLanguage.Strategy
                     Label(new ChartPoint(bar, e.SL), "SL", Color.Red);
                     Label(new ChartPoint(bar, e.TP), "TP", Color.Green);
                 }
+                // письмо — только о свежих событиях (не старше часа по ленте): старые сделки при пересчёте истории не шлются
+                long tapeNow = a.T[a.N - 1];
+                if (_mailOpen.Add(e.TEntry) && tapeNow - e.TEntry < TimeSpan.TicksPerHour) MailOpen(e, te);
                 if (m.Done) continue;
                 DateTime end = e.Reason == "OPEN" ? now : BarOf(new DateTime(e.TExit));
                 m.Entry.End = new ChartPoint(end, e.Entry); m.Sl.End = new ChartPoint(end, e.SL); m.Tp.End = new ChartPoint(end, e.TP);
@@ -1221,7 +1246,8 @@ namespace PowerLanguage.Strategy
                 _csv.Write("trades_fast.csv", FastTradesHeader, tx0, string.Format(CI,
                     "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4:yyyy-MM-dd HH:mm},{5:yyyy-MM-dd HH:mm},{6},{7},{8},{9},{10:yyyy-MM-dd HH:mm},{11},{12},{13},{14},{15},{16}",
                     tx0, ToParis(tx0), _sym, e.Side > 0 ? "BUY" : "SELL", te, ToParis(te), e.Side, F(e.Entry), F(e.SL), F(e.TP),
-                    tx0, F(e.Exit), e.Reason, F(pips), F(e.Pips * PipSize * Bars.Info.BigPointValue - CommissionUsd), src, Version));
+                    tx0, F(e.Exit), e.Reason, F(pips), F(Usd(e)), src, Version));
+                if (_mailClose.Add(e.TEntry) && tapeNow - e.TExit < TimeSpan.TicksPerHour) MailClose(e, te, evs);
             }
             if (_fast.Count != drawn0)   // диагностика: когда и сколько сделок нарисовано
                 RunEvent(string.Format(CI, "FAST_DRAW status={0} rt={1} bar={2:yyyy-MM-dd HH:mm} trades={3}", Bars.Status,
@@ -1230,6 +1256,68 @@ namespace PowerLanguage.Strategy
 
         // MultiCharts мог стереть рисунки, созданные внутри бара, — тогда рисуем сделку заново
         private bool Lost(long key) { FastMarks m; return _fast.TryGetValue(key, out m) && !m.Entry.Exist; }
+
+        private double Usd(LraTicks.Ev e) { return e.Pips * PipSize * Bars.Info.BigPointValue - CommissionUsd; }
+
+        private void MailOpen(LraTicks.Ev e, DateTime te)
+        {
+            string side = e.Side > 0 ? "ПОКУПКА" : "ПРОДАЖА";
+            SendMail(string.Format(CI, "[LraTrader {0}] ОТКРЫТА {1} {2}", _sym, side, F(e.Entry)), string.Format(CI,
+                "Символ:   {0}\nСделка:   {1} вместе с толпой (FAST_TP)\nВход:     {2} в {3:yyyy-MM-dd HH:mm} по бирже ({4:HH:mm} Париж)\n" +
+                "Стоп:     {5} ({6:0.0} п.)\nТейк:     {7} ({8:0.0} п.)\nВыход по времени: через 24 ч или в пятницу 15:55 по бирже\n\n" +
+                "Толпа:    {9} с {10:yyyy-MM-dd HH:mm}, сделок {11}, перевес {12:0%}, цен {13}, зона {14}–{15}",
+                _sym, side, F(e.Entry), te, ToParis(te), F(e.SL), Math.Abs(e.Entry - e.SL) / PipSize, F(e.TP),
+                Math.Abs(e.TP - e.Entry) / PipSize, e.Side > 0 ? "покупает" : "продаёт", new DateTime(e.TS), e.Trades, e.Weight,
+                e.Prices, F(e.ZoneLo), F(e.ZoneHi)));
+        }
+
+        private void MailClose(LraTicks.Ev e, DateTime te, List<LraTicks.Ev> evs)
+        {
+            DateTime tx = new DateTime(e.TExit);
+            var done = evs.FindAll(x => x.Skip == "" && x.Reason != "OPEN" && x.Reason != "");
+            double sumPips = 0, sumUsd = 0; int wins = 0;
+            foreach (var x in done) { sumPips += x.Pips; sumUsd += Usd(x); if (x.Pips > 0) wins++; }
+            SendMail(string.Format(CI, "[LraTrader {0}] ЗАКРЫТА {1} {2:+0.0;-0.0;0} п. ${3:+0.00;-0.00;0}", _sym, e.Reason, e.Pips, Usd(e)),
+                string.Format(CI,
+                "Символ:   {0}\nСделка:   {1}\nВход:     {2} в {3:yyyy-MM-dd HH:mm} по бирже ({4:HH:mm} Париж)\n" +
+                "Выход:    {5} в {6:yyyy-MM-dd HH:mm} по бирже ({7:HH:mm} Париж), причина {8}\nСтоп / тейк: {9} / {10}\n" +
+                "Итог:     {11:+0.0;-0.0;0} п., ${12:+0.00;-0.00;0} (комиссия ${13}, проскальзывание 1 тик учтено)\n\n" +
+                "Всего по {0} с начала ленты: сделок {14}, в плюсе {15}, {16:+0.0;-0.0;0} п., ${17:+0.00;-0.00;0}",
+                _sym, e.Side > 0 ? "ПОКУПКА" : "ПРОДАЖА", F(e.Entry), te, ToParis(te), F(e.Exit), tx, ToParis(tx), e.Reason,
+                F(e.SL), F(e.TP), e.Pips, Usd(e), CommissionUsd, done.Count, wins, sumPips, sumUsd));
+        }
+
+        // Отправка в фоне, как в DivergenceDetector; ошибка — строка MAIL_ERROR в runs.csv
+        private void SendMail(string subj, string body)
+        {
+            if (!EmailEnabled) return;
+            string host = SmtpHost, user = SmtpUser, to = AlertToEmail, pass = "";
+            int port = SmtpPort; bool ssl = SmtpUseSsl;
+            string from = string.IsNullOrWhiteSpace(user) ? "alert@localhost" : user;
+            try { if (!string.IsNullOrWhiteSpace(SmtpPasswordFile)) pass = File.ReadAllText(SmtpPasswordFile).Trim(); }
+            catch (Exception ex) { RunEvent("MAIL_ERROR password file: " + ex.Message.Replace(',', ';')); return; }
+            RunEvent("MAIL " + subj.Replace(',', ';'));
+            Task.Run(() =>
+            {
+                try
+                {
+                    ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, errors) => true;
+                    using (var client = new SmtpClient(host, port))
+                    {
+                        client.EnableSsl = ssl;
+                        client.DeliveryMethod = SmtpDeliveryMethod.Network;
+                        client.Timeout = 10000;
+                        if (!string.IsNullOrWhiteSpace(user)) client.Credentials = new NetworkCredential(user, pass);
+                        using (var msg = new MailMessage(from, to, subj, body))
+                        {
+                            msg.SubjectEncoding = msg.BodyEncoding = Encoding.UTF8;
+                            client.Send(msg);
+                        }
+                    }
+                }
+                catch (Exception ex) { RunEvent("MAIL_ERROR " + ex.Message.Replace(',', ';')); }
+            });
+        }
 
         // Часовой бар, в который попала сделка ленты: время бара — его закрытие
         private static DateTime BarOf(DateTime t) { return t.Date.AddHours(t.Hour + 1); }
