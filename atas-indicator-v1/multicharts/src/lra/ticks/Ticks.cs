@@ -39,7 +39,7 @@ namespace PowerLanguage.Strategy
             public double Target = double.NaN; public long TTarget, TCancel, TReturn, TClose50, TClose100; public string First = "";
             public double MaxFav, MaxAdv, Entry;
             // сделка
-            public string Skip = ""; public double SL, TP, Exit, Pips; public string Reason = ""; public long TExit;
+            public string Skip = ""; public double SL, TP, Exit, Pips; public string Reason = ""; public long TExit; public bool Added;
         }
 
         static double Tick;
@@ -57,9 +57,16 @@ namespace PowerLanguage.Strategy
                 {
                     List<Ev> evs = Detect(v.Item2, hours);
                     foreach (Ev e in evs) Follow(v.Item2, hours, e);
-                    Simulate(evs);
-                    Write(sym, v.Item1, evs);
                     Summary(sum, sym, v.Item1, v.Item2, evs);
+                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY" })
+                        foreach (bool add in new[] { false, true })
+                        {
+                            foreach (Ev e in evs) Trade(v.Item2, hours, e, mode, add);
+                            Simulate(evs);
+                            string name = v.Item1 + "_" + mode + (add ? "_ADD" : "");
+                            Write(sym, name, evs);
+                            TradeSummary(sum, mode + (add ? " + добор" : ""), evs);
+                        }
                 }
             }
             File.WriteAllText(Path.Combine(OutDir, "summary.txt"), sum.ToString());
@@ -204,9 +211,32 @@ namespace PowerLanguage.Strategy
                 if (e.TClose50 == 0 && closedSum >= 0.5 * e.Zone) Mark(e, ref e.TClose50, t, "CLOSE50");
                 if (e.TClose100 == 0 && closedSum >= e.Zone) Mark(e, ref e.TClose100, t, "CLOSE100");
             }
-            // сделка против толпы
+        }
+
+        // Сделка против толпы. Стоп (mode): H0 — хай (лоу) за час до начала роста; FRACTAL — ближайший фрактал часовика
+        // за H0 (В1 01:15:41); DAY — хай (лоу) торгового дня с 17:00 Чикаго, не ближе H0 (В4 03:48–04:07). Всё + 1 тик.
+        // add — сценарий B (В1 01:16:15–01:18:51): цена ушла против нас на AddPips, а встречных сделок с входа не больше,
+        // чем сделок толпы, — добавляем 1 контракт; тейк обоих — возврат к краю зоны со стороны цены.
+        const double AddPips = 10;
+        static void Trade(Tape a, List<LraBar> hours, Ev e, string mode, bool add)
+        {
+            e.Skip = e.Reason = ""; e.Pips = 0; e.TExit = 0; e.Added = false;
+            int i = Array.BinarySearch(a.T, e.TFirst); if (i < 0) i = ~i;
+            if (i >= a.N) { e.Skip = "NO_DATA"; return; }
             int dir = -e.Side;
-            e.SL = cancel;
+            if (mode == "H0") e.SL = e.H0 + e.Side * Tick;
+            else if (mode == "FRACTAL")
+                e.SL = LraLevels.Nearest(hours.Where(b => b.Time.Ticks <= e.TFirst).ToList(), e.Side, e.H0,
+                    new LraSettings { Tick = Tick, FractalBars = 2 });
+            else
+            {
+                DateTime t0 = new DateTime(e.TFirst), day = t0.Date.AddHours(17);
+                if (day > t0) day = day.AddDays(-1);
+                double ext = e.H0;
+                for (int k = i - 1; k >= 0 && a.T[k] >= day.Ticks; k--) if (e.Side * a.P[k] > e.Side * ext) ext = a.P[k];
+                e.SL = ext + e.Side * Tick;
+            }
+            if (double.IsNaN(e.SL)) { e.Skip = "NO_STOP"; return; }
             if (double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
             e.TP = Math.Abs(e.Target - e.Entry) / Pip > MaxTakePips ? e.Entry + dir * MaxTakePips * Pip : e.Target;
             if (dir * (e.TP - e.Entry) <= 0) e.Skip = "TP_PASSED";
@@ -214,15 +244,18 @@ namespace PowerLanguage.Strategy
             else if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) e.Skip = "FAR_STOP";
             if (e.Skip != "") return;
             e.Reason = "TIME";
-            int last = i;
+            double tp = e.TP, addAt = e.Entry - dir * AddPips * Pip, edge = e.Side > 0 ? e.ZoneHi : e.ZoneLo;
+            int flow = 0, last = i;   // сделки толпы минус встречные с момента входа
             for (int k = i; k < a.N && a.T[k] <= e.TFirst + Hold.Ticks; k++)
             {
-                last = k;
+                last = k; flow += e.Side * a.D[k];
                 if (dir * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
-                if (dir * (a.P[k] - e.TP) >= 0) { e.Reason = "TP"; e.Exit = e.TP; e.TExit = a.T[k]; break; }
+                if (dir * (a.P[k] - tp) >= 0) { e.Reason = "TP"; e.Exit = tp; e.TExit = a.T[k]; break; }
+                if (add && !e.Added && dir * (a.P[k] - addAt) <= 0 && flow >= 0 && dir * (addAt - e.SL) > 0)
+                { e.Added = true; tp = dir * (edge - addAt) > 0 ? edge : e.Entry; }
             }
             if (e.Reason == "TIME") { e.Exit = a.P[last]; e.TExit = a.T[last]; }
-            e.Pips = dir * (e.Exit - e.Entry) / Pip;
+            e.Pips = dir * (e.Exit - e.Entry) / Pip + (e.Added ? dir * (e.Exit - addAt) / Pip : 0);
         }
 
         static void Mark(Ev e, ref long field, long t, string name) { field = t; if (e.First == "") e.First = name; }
@@ -256,7 +289,7 @@ namespace PowerLanguage.Strategy
                     double.IsNaN(e.Target) ? "" : e.Target.ToString(CI), e.First,
                     Hrs(e.TFirst, e.TTarget), Hrs(e.TFirst, e.TCancel), Hrs(e.TFirst, e.TReturn), Hrs(e.TFirst, e.TClose50), Hrs(e.TFirst, e.TClose100),
                     e.MaxFav, e.MaxAdv, e.Skip, e.Skip == "" ? e.SL.ToString(CI) : "", e.Skip == "" ? e.TP.ToString(CI) : "",
-                    e.Skip == "" ? e.Exit.ToString(CI) : "", e.Reason, e.Skip == "" ? e.Pips.ToString("0.0", CI) : ""));
+                    e.Skip == "" ? e.Exit.ToString(CI) : "", e.Reason + (e.Added ? "+ADD" : ""),e.Skip == "" ? e.Pips.ToString("0.0", CI) : ""));
             File.WriteAllText(Path.Combine(OutDir, "events_" + sym + "_" + v + ".csv"), w.ToString());
         }
 
@@ -274,13 +307,18 @@ namespace PowerLanguage.Strategy
             }
             o.WriteLine("  что первым за 48 ч: " + string.Join(", ", evs.GroupBy(e => e.First == "" ? "ничего" : e.First)
                 .OrderByDescending(g => g.Count()).Select(g => g.Key + " " + g.Count())));
+        }
+
+        static void TradeSummary(StringWriter o, string name, List<Ev> evs)
+        {
             var tr = evs.Where(e => e.Skip == "").ToList();
             double eq = 0, peak = 0, dd = 0;
             foreach (Ev e in tr) { eq += e.Pips; peak = Math.Max(peak, eq); dd = Math.Max(dd, peak - eq); }
-            o.WriteLine("  сделки: {0}, плюс {1}, минус {2}, итог {3:0} п., на сделку {4:0.0}, просадка {5:0} п.; выходы: {6}",
-                tr.Count, tr.Count(e => e.Pips > 0), tr.Count(e => e.Pips < 0), tr.Sum(e => e.Pips),
-                tr.Count > 0 ? tr.Average(e => e.Pips) : 0, dd, string.Join(", ", tr.GroupBy(e => e.Reason).Select(g => g.Key + " " + g.Count())));
-            o.WriteLine("  пропуски: " + string.Join(", ", evs.Where(e => e.Skip != "").GroupBy(e => e.Skip).Select(g => g.Key + " " + g.Count())));
+            o.WriteLine("  стоп {0}: сделки {1} (с добором {2}), плюс {3}, минус {4}, итог {5:0} п., на сделку {6:0.0}, просадка {7:0} п., стоп в среднем {8:0.0} п.; выходы: {9}; пропуски: {10}",
+                name, tr.Count, tr.Count(e => e.Added), tr.Count(e => e.Pips > 0), tr.Count(e => e.Pips < 0), tr.Sum(e => e.Pips),
+                tr.Count > 0 ? tr.Average(e => e.Pips) : 0, dd, tr.Count > 0 ? tr.Average(e => Math.Abs(e.SL - e.Entry) / Pip) : 0,
+                string.Join(", ", tr.GroupBy(e => e.Reason).Select(g => g.Key + " " + g.Count())),
+                string.Join(", ", evs.Where(e => e.Skip != "").GroupBy(e => e.Skip).Select(g => g.Key + " " + g.Count())));
         }
     }
 }
