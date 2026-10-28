@@ -39,7 +39,7 @@ namespace PowerLanguage.Strategy
             public double Target = double.NaN; public long TTarget, TCancel, TReturn, TClose50, TClose100; public string First = "";
             public double MaxFav, MaxAdv, Entry;
             // сделка
-            public string Skip = ""; public double SL, TP, Exit, Pips; public string Reason = ""; public long TExit; public bool Added;
+            public string Skip = ""; public double SL, TP, Exit, Pips; public string Reason = ""; public long TExit, TEntry; public bool Added;
         }
 
         static double Tick;
@@ -58,10 +58,10 @@ namespace PowerLanguage.Strategy
                     List<Ev> evs = Detect(v.Item2, hours);
                     foreach (Ev e in evs) Follow(v.Item2, hours, e);
                     Summary(sum, sym, v.Item1, v.Item2, evs);
-                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH", "FAST", "FAST_SL" })
+                    foreach (string mode in new[] { "H0", "FRACTAL", "DAY", "WITH", "FAST", "FAST_SL", "SWEEP", "SWEEP_ALL" })
                         foreach (bool add in new[] { false, true })
                         {
-                            if ((mode == "WITH" || mode.StartsWith("FAST")) && add) continue;
+                            if (mode != "H0" && mode != "FRACTAL" && mode != "DAY" && add) continue;
                             foreach (Ev e in evs) Trade(v.Item2, hours, e, mode, add);
                             Simulate(evs);
                             string name = v.Item1 + "_" + mode + (add ? "_ADD" : "");
@@ -225,6 +225,35 @@ namespace PowerLanguage.Strategy
             e.Skip = e.Reason = ""; e.Pips = 0; e.TExit = 0; e.Added = false;
             int i = Array.BinarySearch(a.T, e.TFirst); if (i < 0) i = ~i;
             if (i >= a.N) { e.Skip = "NO_DATA"; return; }
+            e.Entry = a.P[i]; e.TEntry = a.T[i];
+            // SWEEP — вместе с толпой после выноса её стопов (вариант пользователя, 2026-10-28): цена дошла до уровня стопов
+            // толпы (цель), потом вернулась к краю зоны набора — вход; стоп за крайней ценой выноса + 1 тик; выход через 24 ч.
+            // Выноса и возврата ждём FastHold. SWEEP — только быстрый набор (FastSet), SWEEP_ALL — все события.
+            if (mode.StartsWith("SWEEP"))
+            {
+                if (mode == "SWEEP" && e.TFirst - e.TS > FastSet.Ticks) { e.Skip = "SLOW"; return; }
+                if (double.IsNaN(e.Target)) { e.Skip = "NO_LEVEL"; return; }
+                int d = e.Side, j = -1;
+                double ext = double.NaN, near = d > 0 ? e.ZoneLo : e.ZoneHi;
+                for (int k = i; k < a.N && a.T[k] <= e.TFirst + FastHold.Ticks; k++)
+                {
+                    if (double.IsNaN(ext)) { if (-d * (a.P[k] - e.Target) >= 0) ext = a.P[k]; continue; }
+                    if (-d * (a.P[k] - ext) > 0) ext = a.P[k];
+                    if (d * (a.P[k] - near) >= 0) { j = k; break; }
+                }
+                if (j < 0) { e.Skip = double.IsNaN(ext) ? "NO_SWEEP" : "NO_RETURN"; return; }
+                e.Entry = a.P[j]; e.TEntry = a.T[j]; e.SL = ext - d * Tick; e.TP = double.NaN;
+                if (Math.Abs(e.SL - e.Entry) / Pip > MaxStopPips) { e.Skip = "FAR_STOP"; return; }
+                e.Reason = "TIME"; int lastK = j;
+                for (int k = j; k < a.N && a.T[k] <= e.TEntry + FastHold.Ticks; k++)
+                {
+                    lastK = k;
+                    if (d * (a.P[k] - e.SL) <= 0) { e.Reason = "SL"; e.Exit = e.SL; e.TExit = a.T[k]; break; }
+                }
+                if (e.Reason == "TIME") { e.Exit = a.P[lastK]; e.TExit = a.T[lastK]; }
+                e.Pips = d * (e.Exit - e.Entry) / Pip;
+                return;
+            }
             // WITH — вместе с толпой: стоп за уровнем стопов толпы (цель сделки против неё), тейк 15 п.
             // FAST — только быстрый набор (событие не позже FastSet от начала роста), вместе с толпой, без стопа и тейка,
             // выход через 24 ч; FAST_SL — то же со стопом за уровнем стопов толпы (tz-ticks.md, поиск закономерностей).
@@ -276,7 +305,7 @@ namespace PowerLanguage.Strategy
             foreach (Ev e in evs)
             {
                 if (e.Skip != "") continue;
-                if (e.TFirst < busy) { e.Skip = "IN_POSITION"; continue; }
+                if (e.TEntry < busy) { e.Skip = "IN_POSITION"; continue; }
                 busy = e.TExit;
             }
         }
@@ -290,15 +319,15 @@ namespace PowerLanguage.Strategy
         {
             var w = new StringWriter();
             w.WriteLine("Time,ParisTime,Crowd,GrowthStart,LastSeen,Trades,Weight,SmallShare,Prices,ZoneLo,ZoneHi,ZoneImb,H0,Entry,Target," +
-                        "First,H_Target,H_Cancel,H_Return,H_Close50,H_Close100,MaxFav,MaxAdv,Skip,SL,TP,Exit,Reason,Pips");
+                        "First,H_Target,H_Cancel,H_Return,H_Close50,H_Close100,MaxFav,MaxAdv,Skip,SL,TP,Exit,Reason,Pips,EntryParis,ExitParis");
             foreach (Ev e in evs)
-                w.WriteLine(string.Format(CI, "{0},{1},{2},{3},{4},{5},{6:0.000},{7:0.000},{8},{9},{10},{11},{12},{13},{14},{15},{16},{17},{18},{19},{20},{21:0.0},{22:0.0},{23},{24},{25},{26},{27},{28}",
+                w.WriteLine(string.Format(CI, "{0},{1},{2},{3},{4},{5},{6:0.000},{7:0.000},{8},{9},{10},{11},{12},{13},{14},{15},{16},{17},{18},{19},{20},{21:0.0},{22:0.0},{23},{24},{25},{26},{27},{28},{29},{30}",
                     Ts(e.TFirst), Paris(e.TFirst), e.Side > 0 ? "BUY" : "SELL", Ts(e.TS), Ts(e.TLast), e.Trades, e.Weight,
                     (double)e.Small / Math.Max(1, e.Trades), e.Prices, e.ZoneLo, e.ZoneHi, e.Zone, e.H0, e.Entry,
                     double.IsNaN(e.Target) ? "" : e.Target.ToString(CI), e.First,
                     Hrs(e.TFirst, e.TTarget), Hrs(e.TFirst, e.TCancel), Hrs(e.TFirst, e.TReturn), Hrs(e.TFirst, e.TClose50), Hrs(e.TFirst, e.TClose100),
                     e.MaxFav, e.MaxAdv, e.Skip, e.Skip == "" ? e.SL.ToString(CI) : "", e.Skip == "" ? e.TP.ToString(CI) : "",
-                    e.Skip == "" ? e.Exit.ToString(CI) : "", e.Reason + (e.Added ? "+ADD" : ""),e.Skip == "" ? e.Pips.ToString("0.0", CI) : ""));
+                    e.Skip == "" ? e.Exit.ToString(CI) : "", e.Reason + (e.Added ? "+ADD" : ""),e.Skip == "" ? e.Pips.ToString("0.0", CI) : "", e.Skip == "" ? Paris(e.TEntry) : "", e.Skip == "" ? Paris(e.TExit) : ""));
             File.WriteAllText(Path.Combine(OutDir, "events_" + sym + "_" + v + ".csv"), w.ToString());
         }
 
