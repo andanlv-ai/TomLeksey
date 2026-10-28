@@ -526,21 +526,38 @@ namespace PowerLanguage.Strategy
 
 
         // ---------- загрузка ----------
-        public static Tape Load(string path)
+        public static Tape Load(string path) { return new TapeReader(path).Read(); }
+
+        // Чтение ленты с дочитыванием: каждый Read() добавляет строки, дописанные в файл после прошлого чтения.
+        // Строка без перевода строки в конце файла ещё дописывается — ждёт следующего Read().
+        public class TapeReader
         {
-            var t = new List<long>(); var p = new List<double>(); var s = new List<int>(); var d = new List<sbyte>();
-            // TickRecorder держит файл открытым на запись — читать с FileShare.ReadWrite
-            var lines = new List<string>();
-            using (var r = new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
-                for (string l; (l = r.ReadLine()) != null;) lines.Add(l);
-            foreach (string l in lines.Skip(1))
+            readonly string _path; long _pos; string _rest = "";
+            readonly List<long> _t = new List<long>(); readonly List<double> _p = new List<double>();
+            readonly List<int> _s = new List<int>(); readonly List<sbyte> _d = new List<sbyte>();
+            public TapeReader(string path) { _path = path; }
+            public Tape Read()
             {
-                var f = l.Split(',');
-                if (f.Length < 4) continue;   // недописанная последняя строка
-                t.Add(DateTime.ParseExact(f[0], "yyyy-MM-dd HH:mm:ss.fff", CI).Ticks);
-                p.Add(double.Parse(f[1], CI)); s.Add((int)double.Parse(f[2], CI)); d.Add(sbyte.Parse(f[3], CI));
+                string chunk;
+                // TickRecorder держит файл открытым на запись — читать с FileShare.ReadWrite
+                using (var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    fs.Seek(_pos, SeekOrigin.Begin);
+                    var buf = new byte[fs.Length - _pos];
+                    int n = 0; for (int r; n < buf.Length && (r = fs.Read(buf, n, buf.Length - n)) > 0;) n += r;
+                    _pos += n; chunk = System.Text.Encoding.ASCII.GetString(buf, 0, n);
+                }
+                string[] lines = (_rest + chunk).Split('\n');
+                _rest = lines[lines.Length - 1];
+                for (int i = 0; i < lines.Length - 1; i++)
+                {
+                    var f = lines[i].TrimEnd('\r').Split(',');
+                    if (f.Length < 4 || f[0] == "Time") continue;
+                    _t.Add(DateTime.ParseExact(f[0], "yyyy-MM-dd HH:mm:ss.fff", CI).Ticks);
+                    _p.Add(double.Parse(f[1], CI)); _s.Add((int)double.Parse(f[2], CI)); _d.Add(sbyte.Parse(f[3], CI));
+                }
+                return new Tape { T = _t.ToArray(), P = _p.ToArray(), S = _s.ToArray(), D = _d.ToArray(), N = _t.Count };
             }
-            return new Tape { T = t.ToArray(), P = p.ToArray(), S = s.ToArray(), D = d.ToArray(), N = t.Count };
         }
 
         // Вариант G: подряд идущие исполнения с одним временем, направлением и ценой — одна сделка
@@ -757,17 +774,6 @@ namespace PowerLanguage.Strategy
             }
         }
 
-        // Советник LraTrader, Algo = FAST_TP: события по ленте сделок (вариант F — каждое исполнение) и сделка FAST_TP
-        // (tz-ticks.md, шаг 3): быстрый набор — вместе с толпой, стоп за уровнем стопов толпы, тейк на ближайшем фрактале.
-        public List<Ev> FastTp(Tape a, List<LraBar> hours)
-        {
-            if (a.N == 0) return new List<Ev>();
-            List<Ev> evs = Detect(a, hours);
-            foreach (Ev e in evs) { Follow(a, hours, e); Trade(a, hours, e, "FAST_TP", false); }
-            Simulate(evs);
-            return evs;
-        }
-
     }
 }
 
@@ -874,11 +880,13 @@ namespace PowerLanguage.Strategy
 // LraTrader — виртуальный советник по паттернам автора (ТЗ: docs/LraTrader/tz.md). Склейка ядра с MultiCharts.
 namespace PowerLanguage.Strategy
 {
+    [IOGMode(IOGMode.Enabled)]   // FAST_TP: расчёт и внутри бара — сделка рисуется, когда случилась (ордеров нет)
     public class LraTrader : SignalObject
     {
         // ---- Параметры (ТЗ §9) ----
         [Input] public string Algo            { get; set; }  // FAST_TP — по тикам (tz-ticks.md); LRA — прежний, по часовым профилям
         [Input] public string TicksDir        { get; set; }  // FAST_TP: папка <символ>_TRADES.csv (TickRecorder)
+        [Input] public int    RefreshSec      { get; set; }  // FAST_TP: в реальном времени дочитывать ленту не чаще раза в столько секунд
         [Input] public string CrowdMode       { get; set; }  // CUM | WINDOW
         [Input] public int    CumLookback     { get; set; }
         [Input] public double CumWeight       { get; set; }
@@ -925,6 +933,11 @@ namespace PowerLanguage.Strategy
         private readonly Dictionary<long, FastMarks> _fast = new Dictionary<long, FastMarks>();  // TEntry -> линии сделки
         private readonly HashSet<long> _fastSignals = new HashSet<long>();
         private bool _noTicks;
+        private LraTicks _ticks;
+        private LraTicks.TapeReader _tape;
+        private List<LraTicks.Ev> _evs = new List<LraTicks.Ev>();
+        private long _detectStep = -1;
+        private DateTime _lastRefresh;
         private bool _vpWaiting;
         private int _vpPolls;
 
@@ -936,6 +949,7 @@ namespace PowerLanguage.Strategy
         {
             Algo            = "FAST_TP";
             TicksDir        = @"D:\TradeLog\Bars";
+            RefreshSec      = 5;
             CrowdMode       = "CUM";
             CumLookback     = 12;
             CumWeight       = 0.05;
@@ -1006,6 +1020,10 @@ namespace PowerLanguage.Strategy
             _fast.Clear();
             _fastSignals.Clear();
             _noTicks = false;
+            _ticks = new LraTicks(_s.Tick);
+            _tape = null;
+            _evs = new List<LraTicks.Ev>();
+            _detectStep = -1;
 
             _csv = new LraCsv(LogDir, _sym);
             _csv.Write("runs.csv", "Time,Event,Symbol,Version,Params", DateTime.MaxValue,
@@ -1025,8 +1043,15 @@ namespace PowerLanguage.Strategy
 
         protected override void CalcBar()
         {
+            if (Bars.Status != EBarState.Close)
+            {
+                // внутри бара (только реальное время): дочитать ленту, открыть/закрыть сделку
+                if (Algo == "FAST_TP" && _h.Count > 0 && Environment.IsRealTimeCalc &&
+                    (DateTime.Now - _lastRefresh).TotalSeconds >= RefreshSec)
+                    CalcFast(Bars.Time[0]);
+                return;
+            }
             if (!VpReady()) return;
-            if (Bars.Status != EBarState.Close) return;
 
             DateTime t = Bars.Time[0], paris = ToParis(t);
             var b = new LraBar
@@ -1103,17 +1128,32 @@ namespace PowerLanguage.Strategy
         }
 
         // ---- Algo = FAST_TP (tz-ticks.md, шаг 3) ----
-        // На последнем закрытом баре (конец истории, затем каждый час) лента сделок читается заново и считается целиком:
-        // так история и реальное время считаются одним кодом (ядро CoreTicks.cs, то же, что прогон src/lra/ticks).
-        // Время ленты — время графика 1 Tick; часовой график должен быть в том же поясе (Exchange).
-        // ponytail: полный пересчёт раз в час (~1–2 с на месяц тиков); инкрементальный — если лента вырастет в разы
+        // В конце истории лента читается целиком, дальше — дочитывается: на закрытии каждого бара и внутри бара не чаще
+        // RefreshSec. События ищутся заново, когда лента перешла в новый 5-минутный шаг (события бывают только на шагах);
+        // сделки пересчитываются при каждом дочитывании — так стоп и тейк срабатывают через секунды.
+        // Ядро — CoreTicks.cs, тот же код, что прогон src/lra/ticks. Время ленты — время графика 1 Tick; часовой график
+        // должен быть в том же поясе (Exchange).
+        // ponytail: поиск событий — по всей ленте с начала (~1 с на месяц тиков раз в 5 мин); с последнего шага — если лента вырастет в разы
         private const string FastTradesHeader = "CloseTime,ParisTime,Symbol,Crowd,EntryTime,EntryParis,Dir,Entry,SL,TP,ExitTime,Exit,Reason,Pips,Usd,Source,Version";
         private const string FastSignalsHeader = "Time,ParisTime,Symbol,Crowd,GrowthStart,Trades,Weight,Prices,ZoneLo,ZoneHi,H0,Target,Taken,SkipReason,Source,Version";
         private void CalcFast(DateTime now)
         {
             string path = Path.Combine(TicksDir, _sym + "_TRADES.csv");
             if (!File.Exists(path)) { if (!_noTicks) RunEvent("NO_TICKS " + path); _noTicks = true; return; }
-            List<LraTicks.Ev> evs = new LraTicks(_s.Tick).FastTp(LraTicks.Load(path), _h);
+            _lastRefresh = DateTime.Now;
+            if (_tape == null) _tape = new LraTicks.TapeReader(path);
+            LraTicks.Tape a = _tape.Read();
+            if (a.N == 0) return;
+            long step = a.T[a.N - 1] / LraTicks.Step.Ticks;
+            if (step != _detectStep)
+            {
+                _detectStep = step;
+                _evs = _ticks.Detect(a, _h);
+                foreach (LraTicks.Ev e in _evs) _ticks.Follow(a, _h, e);
+            }
+            foreach (LraTicks.Ev e in _evs) _ticks.Trade(a, _h, e, "FAST_TP", false);
+            LraTicks.Simulate(_evs);
+            List<LraTicks.Ev> evs = _evs;
             string src = Environment.IsRealTimeCalc ? "LIVE" : "HIST";
             foreach (LraTicks.Ev e in evs)
             {
@@ -1151,7 +1191,8 @@ namespace PowerLanguage.Strategy
                 Line(new ChartPoint(bar, e.Entry), new ChartPoint(end, e.Exit), c, ETLStyle.ToolDotted);
                 ITextObject tx = DrwText.Create(new ChartPoint(end, e.Exit), string.Format(CI, " {0} {1:+0;-0;0} п.", e.Reason, pips));
                 tx.Color = c; tx.HStyle = ETextStyleH.Right; tx.VStyle = ETextStyleV.Center;
-                DateTime tx0 = new DateTime(e.TExit);
+                // время до минуты: метка CSV читается из файла с точностью до минуты, иначе строка запишется повторно
+                DateTime tx0 = new DateTime(e.TExit - e.TExit % TimeSpan.TicksPerMinute);
                 _csv.Write("trades_fast.csv", FastTradesHeader, tx0, string.Format(CI,
                     "{0:yyyy-MM-dd HH:mm},{1:yyyy-MM-dd HH:mm},{2},{3},{4:yyyy-MM-dd HH:mm},{5:yyyy-MM-dd HH:mm},{6},{7},{8},{9},{10:yyyy-MM-dd HH:mm},{11},{12},{13},{14},{15},{16}",
                     tx0, ToParis(tx0), _sym, e.Side > 0 ? "BUY" : "SELL", te, ToParis(te), e.Side, F(e.Entry), F(e.SL), F(e.TP),

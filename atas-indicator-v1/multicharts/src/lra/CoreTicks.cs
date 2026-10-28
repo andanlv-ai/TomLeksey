@@ -41,21 +41,38 @@ namespace PowerLanguage.Strategy
 
 
         // ---------- загрузка ----------
-        public static Tape Load(string path)
+        public static Tape Load(string path) { return new TapeReader(path).Read(); }
+
+        // Чтение ленты с дочитыванием: каждый Read() добавляет строки, дописанные в файл после прошлого чтения.
+        // Строка без перевода строки в конце файла ещё дописывается — ждёт следующего Read().
+        public class TapeReader
         {
-            var t = new List<long>(); var p = new List<double>(); var s = new List<int>(); var d = new List<sbyte>();
-            // TickRecorder держит файл открытым на запись — читать с FileShare.ReadWrite
-            var lines = new List<string>();
-            using (var r = new StreamReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
-                for (string l; (l = r.ReadLine()) != null;) lines.Add(l);
-            foreach (string l in lines.Skip(1))
+            readonly string _path; long _pos; string _rest = "";
+            readonly List<long> _t = new List<long>(); readonly List<double> _p = new List<double>();
+            readonly List<int> _s = new List<int>(); readonly List<sbyte> _d = new List<sbyte>();
+            public TapeReader(string path) { _path = path; }
+            public Tape Read()
             {
-                var f = l.Split(',');
-                if (f.Length < 4) continue;   // недописанная последняя строка
-                t.Add(DateTime.ParseExact(f[0], "yyyy-MM-dd HH:mm:ss.fff", CI).Ticks);
-                p.Add(double.Parse(f[1], CI)); s.Add((int)double.Parse(f[2], CI)); d.Add(sbyte.Parse(f[3], CI));
+                string chunk;
+                // TickRecorder держит файл открытым на запись — читать с FileShare.ReadWrite
+                using (var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    fs.Seek(_pos, SeekOrigin.Begin);
+                    var buf = new byte[fs.Length - _pos];
+                    int n = 0; for (int r; n < buf.Length && (r = fs.Read(buf, n, buf.Length - n)) > 0;) n += r;
+                    _pos += n; chunk = System.Text.Encoding.ASCII.GetString(buf, 0, n);
+                }
+                string[] lines = (_rest + chunk).Split('\n');
+                _rest = lines[lines.Length - 1];
+                for (int i = 0; i < lines.Length - 1; i++)
+                {
+                    var f = lines[i].TrimEnd('\r').Split(',');
+                    if (f.Length < 4 || f[0] == "Time") continue;
+                    _t.Add(DateTime.ParseExact(f[0], "yyyy-MM-dd HH:mm:ss.fff", CI).Ticks);
+                    _p.Add(double.Parse(f[1], CI)); _s.Add((int)double.Parse(f[2], CI)); _d.Add(sbyte.Parse(f[3], CI));
+                }
+                return new Tape { T = _t.ToArray(), P = _p.ToArray(), S = _s.ToArray(), D = _d.ToArray(), N = _t.Count };
             }
-            return new Tape { T = t.ToArray(), P = p.ToArray(), S = s.ToArray(), D = d.ToArray(), N = t.Count };
         }
 
         // Вариант G: подряд идущие исполнения с одним временем, направлением и ценой — одна сделка
@@ -270,17 +287,6 @@ namespace PowerLanguage.Strategy
                 if (e.TEntry < busy) { e.Skip = "IN_POSITION"; continue; }
                 busy = e.TExit;
             }
-        }
-
-        // Советник LraTrader, Algo = FAST_TP: события по ленте сделок (вариант F — каждое исполнение) и сделка FAST_TP
-        // (tz-ticks.md, шаг 3): быстрый набор — вместе с толпой, стоп за уровнем стопов толпы, тейк на ближайшем фрактале.
-        public List<Ev> FastTp(Tape a, List<LraBar> hours)
-        {
-            if (a.N == 0) return new List<Ev>();
-            List<Ev> evs = Detect(a, hours);
-            foreach (Ev e in evs) { Follow(a, hours, e); Trade(a, hours, e, "FAST_TP", false); }
-            Simulate(evs);
-            return evs;
         }
 
     }
